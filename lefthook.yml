@@ -1,0 +1,14 @@
+pre-commit:
+  parallel: false
+  commands:
+    oxlint:
+      glob: "*.{ts,tsx,js,jsx,mjs,cjs}"
+      run: bunx oxlint --fix --fix-suggestions --no-error-on-unmatched-pattern {staged_files}
+      stage_fixed: true
+    oxfmt:
+      glob: "*.{js,jsx,mjs,cjs,ts,tsx,json,css,md,yml,yaml}"
+      run: bunx oxfmt --no-error-on-unmatched-pattern {staged_files}
+      stage_fixed: true
+    typecheck:
+      glob: "plugin/**/*.{ts,tsx}"
+      run: node_modules/.bin/tsc --noEmit -p plugin

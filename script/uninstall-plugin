@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Removes the Sidequest plugin and its marketplace from Claude Code. Keeps going when either is
+# already gone. Does not delete saved device data: script/reset does that.
+set -euo pipefail
+
+command -v claude >/dev/null || { echo "claude is not on PATH. Install Claude Code first." >&2; exit 1; }
+
+run() {
+  local output
+  if output=$("$@" 2>&1); then
+    printf '%s\n' "$output"
+  elif grep -Eq 'not found in installed plugins|^. Failed to remove marketplace: Marketplace .* not found' <<<"$output"; then
+    printf 'Already removed: %s\n' "$*"
+  else
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
+run claude plugin uninstall sidequest@sidequest
+run claude plugin marketplace remove sidequest

@@ -1,0 +1,13 @@
+{
+  "name": "sidequest",
+  "owner": {
+    "name": "Koah Labs"
+  },
+  "description": "Koah Labs plugins for Claude Code",
+  "plugins": [
+    {
+      "name": "sidequest",
+      "source": "./plugin"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "jsx-a11y", "import", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "eqeqeq": "error",
+    "no-var": "error",
+    "prefer-const": "error",
+    "prefer-template": "error",
+    "no-useless-concat": "error",
+    "object-shorthand": "error",
+    "import/no-duplicates": "error",
+    "typescript/consistent-type-imports": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/ban-ts-comment": "error",
+    "unicorn/prefer-node-protocol": "error",
+    "unicorn/prefer-optional-catch-binding": "error",
+    "unicorn/prefer-string-slice": "error",
+    "unicorn/prefer-includes": "error",
+    "react/jsx-boolean-value": "error",
+    "react/self-closing-comp": "error",
+    "react/jsx-no-useless-fragment": "error",
+    "react/react-in-jsx-scope": "off",
+    "no-await-in-loop": "off",
+    "import/no-unassigned-import": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "react/no-array-index-key": "off",
+    "jsx-a11y/prefer-tag-over-role": "off",
+    "jsx-a11y/no-autofocus": "off",
+    "unicorn/no-invalid-fetch-options": "off"
+  },
+  "ignorePatterns": ["node_modules", "plugin/.claude-plugin/types"]
+}
