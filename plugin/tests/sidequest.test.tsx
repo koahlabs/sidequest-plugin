@@ -1,6 +1,8 @@
 import { expect, mock, test } from "claude-code/testing";
 import type { On } from "claude-code";
 
+import { BAND_ADS } from "../hooks/features";
+
 const AD = {
   adText: "Find your next pair of running shoes.",
   adCta: "Explore",
@@ -49,6 +51,7 @@ type WorldOptions = {
   flagEnv?: Record<string, string>;
   polls?: number[];
   adStatus?: number;
+  startStatus?: number;
   ad?: typeof AD;
   bandAds?: (typeof AD)[];
   holdFirstBand?: boolean;
@@ -69,6 +72,7 @@ function world(
     flagEnv = {},
     polls = [],
     adStatus = 200,
+    startStatus = 201,
     ad = AD,
     bandAds = [],
     holdFirstBand = false,
@@ -98,6 +102,7 @@ function world(
     });
     if (e.url.endsWith("/api/device")) {
       if (method === "POST") {
+        if (startStatus !== 201) return reply(startStatus, "{}");
         return reply(
           201,
           JSON.stringify({ userCode: "BCDF-GHJK", expiresAt: new Date(600000).toISOString() }),
@@ -207,6 +212,12 @@ test("requests no ad before the account is connected", async ($, on) => {
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.complete(COMPLETE);
   expect(inlineRequests(calls)).toHaveLength(0);
+});
+
+test("/sidequest-connect outside the US says it is US only", async ($, on) => {
+  world(on, { startStatus: 403 });
+
+  expect(await connect($)).toBe("only available in the US for now.");
 });
 
 test("/sidequest-connect shows the plain link and code", async ($, on) => {
@@ -466,7 +477,11 @@ const band = (isWorking: boolean, hasSurvey = false, bodyColumns = 80) => ({
   },
 });
 
-test("the band labels the ad with a dim Ad and not the word Sponsored", async ($, on) => {
+// Band ad tests run only while band ads are on; the tests after them cover the off state.
+const bandTest: typeof test = BAND_ADS ? test : () => {};
+const bandOffTest: typeof test = BAND_ADS ? () => {} : test;
+
+bandTest("the band labels the ad with a dim Ad and not the word Sponsored", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -479,7 +494,7 @@ test("the band labels the ad with a dim Ad and not the word Sponsored", async ($
   await ui.unmount();
 });
 
-test("the band shows the brand and the ad text as links", async ($, on) => {
+bandTest("the band shows the brand and the ad text as links", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -490,7 +505,7 @@ test("the band shows the brand and the ad text as links", async ($, on) => {
   await ui.unmount();
 });
 
-test("pressing the band button opens the ad link in the browser", async ($, on) => {
+bandTest("pressing the band button opens the ad link in the browser", async ($, on) => {
   const { clock, opened } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -503,19 +518,22 @@ test("pressing the band button opens the ad link in the browser", async ($, on) 
   await ui.unmount();
 });
 
-test("the band has one button, labeled with the call to action and bound to the o key", async ($, on) => {
-  const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
-  await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await clock.settle();
+bandTest(
+  "the band has one button, labeled with the call to action and bound to the o key",
+  async ($, on) => {
+    const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+    await $.turn.start({ text: QUESTION, turnId: "t1" });
+    await clock.settle();
 
-  const ui = await $.ui.mount({ ...band(true), surface: "terminal" });
-  const buttons = await ui.findAll({ type: "Button" });
-  expect(buttons.map((b) => [b.text, b.props.hotkey])).toEqual([["Explore", "o"]]);
-  await ui.unmount();
-});
+    const ui = await $.ui.mount({ ...band(true), surface: "terminal" });
+    const buttons = await ui.findAll({ type: "Button" });
+    expect(buttons.map((b) => [b.text, b.props.hotkey])).toEqual([["Explore", "o"]]);
+    await ui.unmount();
+  },
+);
 
 for (const surface of ["terminal", "desktop"] as const) {
-  test(`the band shows the advertiser icon (${surface})`, async ($, on) => {
+  bandTest(`the band shows the advertiser icon (${surface})`, async ($, on) => {
     const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
     await $.turn.start({ text: QUESTION, turnId: "t1" });
     await clock.settle();
@@ -534,7 +552,7 @@ test("a submit that never reaches turn.start sends no ad request", async ($, on)
   expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
 });
 
-test("a turn sends one band request and never rotates", async ($, on) => {
+bandTest("a turn sends one band request and never rotates", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD, NEXT_BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.advance(120_000);
@@ -543,7 +561,7 @@ test("a turn sends one band request and never rotates", async ($, on) => {
   expect(bandRequests(calls)).toHaveLength(1);
 });
 
-test("a band ad that arrives after the next turn started is not shown", async ($, on) => {
+bandTest("a band ad that arrives after the next turn started is not shown", async ($, on) => {
   const { clock, releaseFirstBand } = world(on, {
     ...CONNECTED,
     bandAds: [BAND_AD, NEXT_BAND_AD],
@@ -560,7 +578,7 @@ test("a band ad that arrives after the next turn started is not shown", async ($
   await ui.unmount();
 });
 
-test("a band ad that arrives after /sidequest band off is not shown", async ($, on) => {
+bandTest("a band ad that arrives after /sidequest band off is not shown", async ($, on) => {
   const { clock, releaseFirstBand } = world(on, {
     ...CONNECTED,
     bandAds: [BAND_AD],
@@ -577,7 +595,7 @@ test("a band ad that arrives after /sidequest band off is not shown", async ($, 
   await ui.unmount();
 });
 
-test("the band ad stays after the turn completes", async ($, on) => {
+bandTest("the band ad stays after the turn completes", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.complete(COMPLETE);
@@ -588,7 +606,7 @@ test("the band ad stays after the turn completes", async ($, on) => {
   await ui.unmount();
 });
 
-test("a new turn's ad replaces the previous band ad", async ($, on) => {
+bandTest("a new turn's ad replaces the previous band ad", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD, NEXT_BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -600,7 +618,7 @@ test("a new turn's ad replaces the previous band ad", async ($, on) => {
   await ui.unmount();
 });
 
-test("a turn without a fill keeps the previous band ad", async ($, on) => {
+bandTest("a turn without a fill keeps the previous band ad", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -612,7 +630,7 @@ test("a turn without a fill keeps the previous band ad", async ($, on) => {
   await ui.unmount();
 });
 
-test("the band draws nothing while a survey holds the band", async ($, on) => {
+bandTest("the band draws nothing while a survey holds the band", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -625,7 +643,7 @@ test("the band draws nothing while a survey holds the band", async ($, on) => {
 const BAND_IMPRESSION_URL = `${SITE}/api/impression/${BAND_AD.impressionId}`;
 
 for (const surface of ["terminal", "desktop"] as const) {
-  test(`reports the band impression when the band is drawn (${surface})`, async ($, on) => {
+  bandTest(`reports the band impression when the band is drawn (${surface})`, async ($, on) => {
     const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
     await $.turn.start({ text: QUESTION, turnId: "t1" });
     await clock.settle();
@@ -638,7 +656,7 @@ for (const surface of ["terminal", "desktop"] as const) {
   });
 }
 
-test("reports no band impression when the band renders but is not drawn", async ($, on) => {
+bandTest("reports no band impression when the band renders but is not drawn", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -648,7 +666,7 @@ test("reports no band impression when the band renders but is not drawn", async 
   expect(calls.filter((c) => c.url === BAND_IMPRESSION_URL)).toHaveLength(0);
 });
 
-test("reports one band impression when the band is drawn again", async ($, on) => {
+bandTest("reports one band impression when the band is drawn again", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -663,7 +681,7 @@ test("reports one band impression when the band is drawn again", async ($, on) =
   expect(calls.filter((c) => c.url === BAND_IMPRESSION_URL)).toHaveLength(1);
 });
 
-test("a turn started by an agent sends no band request", async ($, on) => {
+bandTest("a turn started by an agent sends no band request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1", agentId: "a1" });
   await clock.settle();
@@ -671,7 +689,7 @@ test("a turn started by an agent sends no band request", async ($, on) => {
   expect(bandRequests(calls)).toHaveLength(0);
 });
 
-test("a turn with no text asks for a band ad with the earlier question", async ($, on) => {
+bandTest("a turn with no text asks for a band ad with the earlier question", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD, NEXT_BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.start({ text: "", turnId: "t2" });
@@ -680,7 +698,7 @@ test("a turn with no text asks for a band ad with the earlier question", async (
   expect(JSON.parse(bandRequests(calls)[1]?.body ?? "{}").question).toBe(QUESTION);
 });
 
-test("a band request carries the question and no answer", async ($, on) => {
+bandTest("a band request carries the question and no answer", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -699,20 +717,23 @@ const BAND_WIDTHS = [
 ];
 
 for (const { columns, textLength } of BAND_WIDTHS) {
-  test(`a band request after a ${columns} column band asks for ${textLength} characters`, async ($, on) => {
-    const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
-    const ui = await $.ui.mount({ ...band(true, false, columns), surface: "terminal" });
-    await ui.unmount();
-    await $.turn.start({ text: QUESTION, turnId: "t1" });
-    await clock.settle();
+  bandTest(
+    `a band request after a ${columns} column band asks for ${textLength} characters`,
+    async ($, on) => {
+      const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+      const ui = await $.ui.mount({ ...band(true, false, columns), surface: "terminal" });
+      await ui.unmount();
+      await $.turn.start({ text: QUESTION, turnId: "t1" });
+      await clock.settle();
 
-    expect(JSON.parse(bandRequests(calls)[0]?.body ?? "{}").textLength).toBe(textLength);
-  });
+      expect(JSON.parse(bandRequests(calls)[0]?.body ?? "{}").textLength).toBe(textLength);
+    },
+  );
 }
 
 const USAGE = "Usage: /sidequest on | off | inline on | inline off | band on | band off";
 
-test("both ad placements are on by default", async ($, on) => {
+bandTest("both ad placements are on by default", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.complete(COMPLETE);
@@ -721,7 +742,7 @@ test("both ad placements are on by default", async ($, on) => {
   expect([inlineRequests(calls).length, bandRequests(calls).length]).toEqual([1, 1]);
 });
 
-test("/sidequest band off sends no band request on the next turn", async ($, on) => {
+bandTest("/sidequest band off sends no band request on the next turn", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await sidequest($, "band off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
@@ -730,7 +751,7 @@ test("/sidequest band off sends no band request on the next turn", async ($, on)
   expect(bandRequests(calls)).toHaveLength(0);
 });
 
-test("/sidequest band off still requests inline ads", async ($, on) => {
+bandTest("/sidequest band off still requests inline ads", async ($, on) => {
   const { calls } = world(on, CONNECTED);
   await sidequest($, "band off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
@@ -739,7 +760,7 @@ test("/sidequest band off still requests inline ads", async ($, on) => {
   expect(inlineRequests(calls)).toHaveLength(1);
 });
 
-test("/sidequest band off hides the band that is showing", async ($, on) => {
+bandTest("/sidequest band off hides the band that is showing", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
@@ -750,7 +771,7 @@ test("/sidequest band off hides the band that is showing", async ($, on) => {
   await ui.unmount();
 });
 
-test("/sidequest inline off sends no inline request", async ($, on) => {
+bandTest("/sidequest inline off sends no inline request", async ($, on) => {
   const { calls } = world(on, CONNECTED);
   await sidequest($, "inline off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
@@ -759,7 +780,7 @@ test("/sidequest inline off sends no inline request", async ($, on) => {
   expect(inlineRequests(calls)).toHaveLength(0);
 });
 
-test("/sidequest inline off still requests band ads", async ($, on) => {
+bandTest("/sidequest inline off still requests band ads", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await sidequest($, "inline off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
@@ -768,7 +789,7 @@ test("/sidequest inline off still requests band ads", async ($, on) => {
   expect(bandRequests(calls)).toHaveLength(1);
 });
 
-test("/sidequest inline off hides the inline ad that is showing", async ($, on) => {
+bandTest("/sidequest inline off hides the inline ad that is showing", async ($, on) => {
   world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.complete(COMPLETE);
@@ -779,7 +800,7 @@ test("/sidequest inline off hides the inline ad that is showing", async ($, on) 
   await ui.unmount();
 });
 
-test("/sidequest off sends no ad request of either kind", async ($, on) => {
+bandTest("/sidequest off sends no ad request of either kind", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await sidequest($, "off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
@@ -789,7 +810,7 @@ test("/sidequest off sends no ad request of either kind", async ($, on) => {
   expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
 });
 
-test("/sidequest on turns both placements back on", async ($, on) => {
+bandTest("/sidequest on turns both placements back on", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await sidequest($, "off");
   await sidequest($, "on");
@@ -800,7 +821,7 @@ test("/sidequest on turns both placements back on", async ($, on) => {
   expect([inlineRequests(calls).length, bandRequests(calls).length]).toEqual([1, 1]);
 });
 
-test("saved settings apply in a new session", async ($, on) => {
+bandTest("saved settings apply in a new session", async ($, on) => {
   const { calls, clock } = world(on, {
     store: { deviceKey: KEY, settings: { inline: true, band: false } },
     bandAds: [BAND_AD],
@@ -812,7 +833,7 @@ test("saved settings apply in a new session", async ($, on) => {
   expect(bandRequests(calls)).toHaveLength(0);
 });
 
-test("/sidequest alone prints the current settings and the usage", async ($, on) => {
+bandTest("/sidequest alone prints the current settings and the usage", async ($, on) => {
   world(on, CONNECTED);
   await sidequest($, "inline off");
 
@@ -820,9 +841,55 @@ test("/sidequest alone prints the current settings and the usage", async ($, on)
 });
 
 for (const args of ["maybe", "band", "band maybe", "sidebar on", "on off", "band on now"]) {
-  test(`/sidequest ${args} prints the usage and changes nothing`, async ($, on) => {
+  bandTest(`/sidequest ${args} prints the usage and changes nothing`, async ($, on) => {
     world(on, CONNECTED);
 
     expect(await sidequest($, args)).toBe(USAGE);
+  });
+}
+
+bandOffTest("with band ads off, a turn sends only the inline request", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  expect([inlineRequests(calls).length, bandRequests(calls).length]).toEqual([1, 0]);
+});
+
+bandOffTest("with band ads off, /sidequest off sends no ad request", async ($, on) => {
+  const { calls } = world(on, CONNECTED);
+  await sidequest($, "off");
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  expect(inlineRequests(calls)).toHaveLength(0);
+});
+
+bandOffTest(
+  "with band ads off, a saved inline off still applies in a new session",
+  async ($, on) => {
+    const { calls } = world(on, {
+      store: { deviceKey: KEY, settings: { inline: false, band: true } },
+    });
+    await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
+    await $.turn.start({ text: QUESTION, turnId: "t1" });
+    await $.turn.complete(COMPLETE);
+
+    expect(inlineRequests(calls)).toHaveLength(0);
+  },
+);
+
+bandOffTest("with band ads off, /sidequest shows only on and off", async ($, on) => {
+  world(on, CONNECTED);
+
+  expect(await sidequest($, "")).toBe("Ads: on.\nUsage: /sidequest on | off");
+});
+
+for (const args of ["band on", "band off", "inline off"]) {
+  bandOffTest(`with band ads off, /sidequest ${args} prints the usage`, async ($, on) => {
+    world(on, CONNECTED);
+
+    expect(await sidequest($, args)).toBe("Usage: /sidequest on | off");
   });
 }

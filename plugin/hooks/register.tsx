@@ -2,6 +2,7 @@ import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register } from "claude-code";
 
 import type { AdSlot, KoahAd } from "../types";
+import { BAND_ADS } from "./features";
 
 const MAX_TEXT = 4000;
 const MAX_SLOTS = 50;
@@ -16,15 +17,21 @@ const band = atom({ plugin: "sidequest", key: "band" } as const, null as KoahAd 
 
 type Settings = { inline: boolean; band: boolean };
 
-const USAGE = "Usage: /sidequest on | off | inline on | inline off | band on | band off";
+const USAGE = BAND_ADS
+  ? "Usage: /sidequest on | off | inline on | inline off | band on | band off"
+  : "Usage: /sidequest on | off";
 
 const COMMANDS = new Map<string, Partial<Settings>>([
-  ["on", { inline: true, band: true }],
+  ["on", { inline: true, band: BAND_ADS }],
   ["off", { inline: false, band: false }],
-  ["inline on", { inline: true }],
-  ["inline off", { inline: false }],
-  ["band on", { band: true }],
-  ["band off", { band: false }],
+  ...(BAND_ADS
+    ? ([
+        ["inline on", { inline: true }],
+        ["inline off", { inline: false }],
+        ["band on", { band: true }],
+        ["band off", { band: false }],
+      ] as const)
+    : []),
 ]);
 
 type Pending = { key: string; expiresAt: number; userCode: string };
@@ -64,12 +71,14 @@ async function storedPending($: EngineInterface): Promise<Pending | undefined> {
 function readSettings($: EngineInterface): Promise<Settings> {
   return (settingsOnce ??= $.store.get("settings").then((saved) => {
     const stored = (saved ?? {}) as Partial<Settings>;
-    return { inline: stored.inline !== false, band: stored.band !== false };
+    return { inline: stored.inline !== false, band: BAND_ADS && stored.band !== false };
   }));
 }
 
 const settingsText = (s: Settings) =>
-  `Inline ads: ${s.inline ? "on" : "off"}. Band ads: ${s.band ? "on" : "off"}.`;
+  BAND_ADS
+    ? `Inline ads: ${s.inline ? "on" : "off"}. Band ads: ${s.band ? "on" : "off"}.`
+    : `Ads: ${s.inline ? "on" : "off"}.`;
 
 function site($: EngineInterface): Promise<string> {
   return (siteOnce ??= resolveSite($));
@@ -326,7 +335,9 @@ export const register: Register = (on) => {
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: "sidequest",
-      description: "Turn Sidequest ads on or off, or choose inline or band ads",
+      description: BAND_ADS
+        ? "Turn Sidequest ads on or off, or choose inline or band ads"
+        : "Turn Sidequest ads on or off",
     });
     await $.command.register({
       name: "sidequest-connect",
@@ -371,6 +382,7 @@ export const register: Register = (on) => {
         body: JSON.stringify({ os }),
       })
       .catch(() => undefined);
+    if (res?.status === 403) return { text: "only available in the US for now." };
     if (res?.status === 429)
       return { text: "Too many connection attempts from this network. Try again in 10 minutes." };
     if (res?.status !== 201)
@@ -477,6 +489,7 @@ export const register: Register = (on) => {
 
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     bandColumns = e.props.bodyColumns;
+    if (!BAND_ADS) return next(e);
     if (e.surface !== "terminal" && e.surface !== "desktop") return next(e);
     if (e.props.hasSurvey) return next(e);
     const ad = await read($, band);
