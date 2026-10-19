@@ -1,12 +1,9 @@
 <div align="center">
 
-```
-  ____ ___ ____  _____ ___  _   _ _____ ____ _____
- / ___|_ _|  _ \| ____/ _ \| | | | ____/ ___|_   _|
- \___ \| || | | |  _|| | | | | | |  _| \___ \ | |
-  ___) | || |_| | |__| |_| | |_| | |___ ___) || |
- |____/___|____/|_____\__\_\\___/|_____|____/ |_|
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/sidequest-dark.svg">
+  <img src="assets/sidequest-light.svg" alt="Sidequest" width="560">
+</picture>
 
 **A short detour under every Claude Code answer.**
 
