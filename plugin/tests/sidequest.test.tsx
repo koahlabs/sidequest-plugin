@@ -51,6 +51,7 @@ type WorldOptions = {
   flagEnv?: Record<string, string>;
   polls?: number[];
   adStatus?: number;
+  startStatus?: number;
   ad?: typeof AD;
   bandAds?: (typeof AD)[];
   holdFirstBand?: boolean;
@@ -71,6 +72,7 @@ function world(
     flagEnv = {},
     polls = [],
     adStatus = 200,
+    startStatus = 201,
     ad = AD,
     bandAds = [],
     holdFirstBand = false,
@@ -100,6 +102,7 @@ function world(
     });
     if (e.url.endsWith("/api/device")) {
       if (method === "POST") {
+        if (startStatus !== 201) return reply(startStatus, "{}");
         return reply(
           201,
           JSON.stringify({ userCode: "BCDF-GHJK", expiresAt: new Date(600000).toISOString() }),
@@ -209,6 +212,12 @@ test("requests no ad before the account is connected", async ($, on) => {
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.complete(COMPLETE);
   expect(inlineRequests(calls)).toHaveLength(0);
+});
+
+test("/sidequest-connect outside the US says it is US only", async ($, on) => {
+  world(on, { startStatus: 403 });
+
+  expect(await connect($)).toBe("only available in the US for now.");
 });
 
 test("/sidequest-connect shows the plain link and code", async ($, on) => {

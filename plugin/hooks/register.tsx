@@ -382,6 +382,7 @@ export const register: Register = (on) => {
         body: JSON.stringify({ os }),
       })
       .catch(() => undefined);
+    if (res?.status === 403) return { text: "only available in the US for now." };
     if (res?.status === 429)
       return { text: "Too many connection attempts from this network. Try again in 10 minutes." };
     if (res?.status !== 201)
