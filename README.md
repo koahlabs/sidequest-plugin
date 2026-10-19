@@ -45,13 +45,7 @@ Built to last, repaired for free. Patagonia's Ironclad Guarantee means...
 ╰────────────╯
 ```
 
-One more line, with an **Ad** label, sits directly above the prompt:
-
-```
-[▣] Patagonia  Ad  Built to last, repaired for free.  o: Learn More
-```
-
-- Every card says **Sponsored**, and the line above the prompt says **Ad**. The ad never goes into Claude's answer or the
+- Every card says **Sponsored**. The ad never goes into Claude's answer or the
   conversation, so the model never reads it.
 - Each answer gets its own ad. Earlier ads stay where they are.
 - It works in the terminal and in the Claude desktop app, with the
@@ -63,17 +57,15 @@ Open [getsidequest.dev/account](https://getsidequest.dev/account) and sign in. T
 
 ## Use
 
-| Action                        | How                                                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------ |
-| Show the ad settings          | `/sidequest`                                                                                     |
-| Turn all ads on or off        | `/sidequest on` or `/sidequest off`                                                              |
-| Turn one kind of ad on or off | `/sidequest inline on\|off` or `/sidequest band on\|off`                                         |
-| See the band ad               | Automatic. One ad shows above the prompt and stays until the next turn brings a new one          |
-| Count an impression           | Automatic, once per ad, when the inline ad or the band ad is drawn. A hidden band counts nothing |
+| Action                  | How                                          |
+| ----------------------- | -------------------------------------------- |
+| Show whether ads are on | `/sidequest`                                 |
+| Turn ads on or off      | `/sidequest on` or `/sidequest off`          |
+| Count an impression     | Automatic, once per ad, when the ad is drawn |
 
 ## What it sends
 
-Each request goes to getsidequest.dev. It carries the last question and answer (up to 4,000 characters each), the session ID, and a random per-machine device key. The site forwards the request to Koah with your account. The mod does no IP lookup: the site sees your IP as any web request does. It never sends an email address or phone number. At the start of each turn it also sends one request for the band ad, with the question only and the text length that fits the terminal width.
+Each request goes to getsidequest.dev. It carries the last question and answer (up to 4,000 characters each), the session ID, and a random per-machine device key. The site forwards the request to Koah with your account. The mod does no IP lookup: the site sees your IP as any web request does. It never sends an email address or phone number.
 
 ## Requirements
 
