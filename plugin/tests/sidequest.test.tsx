@@ -220,22 +220,23 @@ test("/sidequest-connect outside the US says it is US only", async ($, on) => {
   expect(await connect($)).toBe("only available in the US for now.");
 });
 
-test("/sidequest-connect shows the plain link and code", async ($, on) => {
+const URL_WITH_CODE = `${SITE}/connect?code=BCDF-GHJK`;
+
+test("/sidequest-connect shows the link and the code as text to copy, not as links", async ($, on) => {
   world(on);
   const text = await connect($);
 
-  expect(text).toContain(`${SITE}/connect `);
-  expect(text).toContain("**BCDF-GHJK**");
+  expect(text).toContain(`\`\`\`\n${URL_WITH_CODE}\n\`\`\``);
+  expect(text).toContain("```\nBCDF-GHJK\n```");
 });
 
 test("keeps the code on the status line while the connection is pending", async ($, on) => {
   const { statuses } = world(on);
   await connect($);
 
-  expect(statuses.at(-1)).toContain(`${SITE}/connect and enter code BCDF-GHJK`);
+  expect(statuses.at(-1)).toContain(URL_WITH_CODE);
 });
 
-const URL_WITH_CODE = `${SITE}/connect?code=BCDF-GHJK`;
 const CONNECT_ROWS = [
   { os: "macos", options: { unameOutput: "Darwin\n" }, opener: ["open", URL_WITH_CODE] },
   { os: "linux", options: { unameOutput: "Linux\n" }, opener: ["xdg-open", URL_WITH_CODE] },
