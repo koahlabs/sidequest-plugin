@@ -8,9 +8,10 @@ const MAX_TEXT = 4000;
 const MAX_SLOTS = 50;
 const SITE = "https://getsidequest.dev";
 const POLL_MS = 1000;
-const NEVER_ENTER = "Never enter a code you didn't get from this terminal.";
-const codeNotice = (link: string, userCode: string) =>
-  `sidequest: open ${link} and enter code ${userCode}. ${NEVER_ENTER}`;
+const NEVER_ENTER = "Only enter a code that Claude showed you.";
+const connectUrl = (base: string, userCode: string) => `${base}/connect?code=${userCode}`;
+const codeNotice = (base: string, userCode: string) =>
+  `sidequest: copy ${connectUrl(base, userCode)} into your browser. ${NEVER_ENTER}`;
 
 const slots = atom({ plugin: "sidequest", key: "slots" } as const, [] as AdSlot[]);
 const band = atom({ plugin: "sidequest", key: "band" } as const, null as KoahAd | null);
@@ -140,7 +141,7 @@ function currentOs($: EngineInterface): Promise<Os | undefined> {
 // The code stays on the status line until the poll ends, also after a restart.
 async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: Pending) {
   const base = await site($);
-  $.ui.status(codeNotice(`${base}/connect`, userCode));
+  $.ui.status(codeNotice(base, userCode));
   const finish = async (toast: string) => {
     await $.store.delete("pending");
     $.ui.status(undefined);
@@ -390,12 +391,26 @@ export const register: Register = (on) => {
 
     const { userCode, expiresAt } = JSON.parse(res.text) as { userCode: string; expiresAt: string };
     const pending = { key, expiresAt: Date.parse(expiresAt), userCode };
-    const link = `${base}/connect`;
+    const url = connectUrl(base, userCode);
     await $.store.set("pending", pending);
-    await openBrowser($, `${link}?code=${userCode}`, os);
+    await openBrowser($, url, os);
     void pollConnection($, pending).catch(() => {});
+    // Code blocks, not links: Claude Desktop opens links in its own browser, where the user is signed out.
     return {
-      text: `Open ${link} and enter code **${userCode}**. ${NEVER_ENTER}`,
+      text: [
+        "**Connect Sidequest**",
+        "",
+        "1. Copy this link into your browser:",
+        "```",
+        url,
+        "```",
+        "2. If the page asks for a code, enter:",
+        "```",
+        userCode,
+        "```",
+        "",
+        NEVER_ENTER,
+      ].join("\n"),
       // The output is for the person. Without this, Claude brings the connection up in later answers.
       context: ["The user ran /sidequest-connect. Its output is for them only. Do not mention it."],
     };
