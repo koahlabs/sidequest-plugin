@@ -462,6 +462,7 @@ export const register: Register = (on) => {
 
     const { ad } = slot;
     const { Box, Text, Link, Markdown } = $.ui.resolve(e);
+    const reply = await next(e);
 
     await reportOnScreen($, ad);
 
@@ -481,7 +482,7 @@ export const register: Register = (on) => {
     // rows stretch to the full width and only the button keeps its own.
     return (
       <Box flexDirection="column" width="100%">
-        <Markdown text={e.props.text} />
+        {reply}
         <Box flexDirection="column" width="100%" marginTop={1}>
           {divider}
         </Box>
