@@ -39,6 +39,7 @@ type Pending = { key: string; expiresAt: number; userCode: string };
 
 let siteOnce: Promise<string> | undefined;
 let osOnce: Promise<Os | undefined> | undefined;
+let clientOnce: Promise<Client> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
 let bandTurnId: string | undefined;
@@ -134,6 +135,14 @@ async function detectOs($: EngineInterface): Promise<Os | undefined> {
 
 function currentOs($: EngineInterface): Promise<Os | undefined> {
   return (osOnce ??= detectOs($));
+}
+
+// Claude Code sets the entrypoint; the site turns the client into the Koah slot it reports by.
+type Client = "desktop" | "terminal";
+function currentClient($: EngineInterface): Promise<Client> {
+  return (clientOnce ??= $.env
+    .get("CLAUDE_CODE_ENTRYPOINT")
+    .then((entrypoint) => (entrypoint === "claude-desktop" ? "desktop" : "terminal")));
 }
 
 // Polls until the site confirms the pending key, refuses it, or it expires.
@@ -263,6 +272,7 @@ async function requestAd(
     },
     body: JSON.stringify({
       placement,
+      client: await currentClient($),
       question: question.slice(0, MAX_TEXT),
       answer: answer?.slice(0, MAX_TEXT),
       textLength: placement === "band" ? bandTextLength() : undefined,
@@ -330,6 +340,7 @@ function adIcon($: EngineInterface, e: RenderEvent, ad: KoahAd) {
 export const register: Register = (on) => {
   siteOnce = undefined;
   osOnce = undefined;
+  clientOnce = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
 

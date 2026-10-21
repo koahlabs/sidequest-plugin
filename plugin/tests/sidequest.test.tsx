@@ -384,10 +384,22 @@ test("sends the question, answer and session id with the device key", async ($, 
   expect(keyOf(request)).toBe(KEY);
   expect(JSON.parse(request?.body ?? "{}")).toEqual({
     placement: "inline",
+    client: "terminal",
     question: QUESTION,
     answer: ANSWER,
     conversationId: "session_abc",
   });
+});
+
+test("tells the site the ad request comes from Claude Desktop", async ($, on) => {
+  const { calls } = world(on, {
+    ...CONNECTED,
+    osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+  });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("desktop");
 });
 
 for (const surface of ["terminal", "desktop"] as const) {
@@ -706,6 +718,7 @@ bandTest("a band request carries the question and no answer", async ($, on) => {
 
   expect(JSON.parse(bandRequests(calls)[0]?.body ?? "{}")).toEqual({
     placement: "band",
+    client: "terminal",
     question: QUESTION,
     conversationId: "session_abc",
     textLength: 60,
