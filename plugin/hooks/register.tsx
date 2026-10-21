@@ -184,17 +184,14 @@ async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: 
 }
 
 // $.http.fetch returns text only, so curl fetches the icon and base64 encodes
-// it. Many advertisers serve an ICO (Baseten does), so sips converts any
-// non-PNG to a 64px PNG first.
+// it. Advertisers serve ICOs (Baseten) and large PNGs (Koah monograms), so sips
+// turns every icon into a PNG of at most 64px.
 const FETCH_ICON = `
 t=$(mktemp -d) || exit 1
 trap 'rm -rf "$t"' EXIT
 curl -sfL --max-time 5 "$1" -o "$t/icon" || exit 1
-if ! head -c 8 "$t/icon" | grep -q PNG; then
-  sips -s format png -Z 64 "$t/icon" --out "$t/icon.png" >/dev/null 2>&1 || exit 1
-  mv "$t/icon.png" "$t/icon"
-fi
-base64 < "$t/icon"
+sips -s format png -Z 64 "$t/icon" --out "$t/icon.png" >/dev/null 2>&1 || exit 1
+base64 < "$t/icon.png"
 `;
 
 const icons = new Map<string, string | undefined>();
@@ -462,7 +459,6 @@ export const register: Register = (on) => {
 
     const { ad } = slot;
     const { Box, Text, Link, Markdown } = $.ui.resolve(e);
-    const reply = await next(e);
 
     await reportOnScreen($, ad);
 
@@ -482,7 +478,7 @@ export const register: Register = (on) => {
     // rows stretch to the full width and only the button keeps its own.
     return (
       <Box flexDirection="column" width="100%">
-        {reply}
+        <Markdown text={e.props.text} />
         <Box flexDirection="column" width="100%" marginTop={1}>
           {divider}
         </Box>
