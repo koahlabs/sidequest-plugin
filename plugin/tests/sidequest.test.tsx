@@ -155,7 +155,7 @@ function world(
   on("command.register", async (_$, e) => ({ value: { command: e.name } }));
   mock.store(on, store);
   on("session.version", async () => ({ value: { version: CLAUDE_VERSION } }));
-  mock.env(on, { TERM_PROGRAM, ...osEnv });
+  mock.env(on, { TERM_PROGRAM, CLAUDE_CODE_ENTRYPOINT: "cli", ...osEnv });
   on("settings.read", async (_$, e) => {
     const envs: Record<string, Record<string, string>> = {
       project: projectEnv,
@@ -264,10 +264,21 @@ for (const { os, options, opener } of CONNECT_ROWS) {
     await connect($);
 
     const start = calls.find((c) => c.method === "POST");
-    expect(JSON.parse(start?.body ?? "")).toEqual({ os });
+    expect(JSON.parse(start?.body ?? "").os).toBe(os);
     expect(opened).toContainEqual(opener);
   });
 }
+
+test("/sidequest-connect sends the plugin version and client with the os", async ($, on) => {
+  const { calls } = world(on);
+  await connect($);
+
+  const start = calls.find((c) => c.method === "POST");
+  expect(JSON.parse(start?.body ?? "{}")).toMatchObject({
+    pluginVersion: PLUGIN_VERSION,
+    client: "terminal",
+  });
+});
 
 test("/sidequest-connect tries every opener when the os is unknown", async ($, on) => {
   const { calls, opened } = world(on, {
@@ -277,7 +288,7 @@ test("/sidequest-connect tries every opener when the os is unknown", async ($, o
   await connect($);
 
   const start = calls.find((c) => c.method === "POST");
-  expect(JSON.parse(start?.body ?? "{}")).toEqual({});
+  expect(JSON.parse(start?.body ?? "{}").os).toBeUndefined();
   const openers = opened.filter((argv) => argv.at(-1)?.includes("/connect?code="));
   expect(openers.map((argv) => argv[0])).toEqual(["open", "xdg-open", "rundll32"]);
 });
@@ -426,7 +437,42 @@ test("tells the site the ad request comes from Claude Desktop", async ($, on) =>
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("desktop");
 });
 
-test("a Claude Desktop request sends no terminal program or fullscreen", async ($, on) => {
+test("an IDE extension request sends its entrypoint as the client", async ($, on) => {
+  const { calls } = world(on, {
+    ...CONNECTED,
+    osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
+  });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("claude-vscode");
+});
+
+test("a terminal opened from another terminal sends its own app, not the inherited TERM_PROGRAM", async ($, on) => {
+  const { calls } = world(on, {
+    ...CONNECTED,
+    osEnv: { __CFBundleIdentifier: "net.kovidgoyal.kitty" },
+  });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").terminalProgram).toBe(
+    "net.kovidgoyal.kitty",
+  );
+});
+
+test("an IDE extension launched from a terminal sends no terminal program", async ($, on) => {
+  const { calls } = world(on, {
+    ...CONNECTED,
+    osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
+  });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").terminalProgram).toBeUndefined();
+});
+
+test("a Claude Desktop viewport does not set fullscreen", async ($, on) => {
   const { calls } = world(on, {
     ...CONNECTED,
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
@@ -438,11 +484,7 @@ test("a Claude Desktop request sends no terminal program or fullscreen", async (
   await $.turn.complete(COMPLETE);
 
   const body = JSON.parse(inlineRequests(calls)[0]?.body ?? "{}");
-  expect([body.claudeVersion, body.terminalProgram, body.fullscreen]).toEqual([
-    CLAUDE_VERSION,
-    undefined,
-    undefined,
-  ]);
+  expect(body.fullscreen).toBeUndefined();
 });
 
 test("sends whether the terminal renders fullscreen, as the viewport says", async ($, on) => {
@@ -486,6 +528,19 @@ test("clicking the call to action in the fullscreen terminal opens the ad link",
     surface: "terminal",
     viewport: { columns: 120, rows: 40, isFullscreen: true },
   });
+  await ui.press({ key: "cta" });
+  await clock.settle();
+
+  expect(opened).toContainEqual(["open", AD.adLink]);
+  await ui.unmount();
+});
+
+test("pressing the button in the IDE panel opens the ad link", async ($, on) => {
+  const { clock, opened } = world(on, CONNECTED);
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  const ui = await $.ui.mount({ ...message("Prioritize fit and cushioning."), surface: "vscode" });
   await ui.press({ key: "cta" });
   await clock.settle();
 
@@ -935,7 +990,16 @@ bandTest("/sidequest alone prints the current settings and the usage", async ($,
   world(on, CONNECTED);
   await sidequest($, "inline off");
 
-  expect(await sidequest($, "")).toBe(`Inline ads: off. Band ads: on.\n${USAGE}`);
+  const text = await sidequest($, "");
+  expect(text.startsWith("Inline ads: off. Band ads: on.\n")).toBe(true);
+  expect(text.endsWith(`\n${USAGE}`)).toBe(true);
+});
+
+test("/sidequest alone lists the plugin version and the Claude Code version", async ($, on) => {
+  world(on, CONNECTED);
+
+  const text = await sidequest($, "");
+  expect(text).toContain(`Sidequest v${PLUGIN_VERSION} · Claude Code ${CLAUDE_VERSION}`);
 });
 
 for (const args of ["maybe", "band", "band maybe", "sidebar on", "on off", "band on now"]) {
@@ -981,7 +1045,9 @@ bandOffTest(
 bandOffTest("with band ads off, /sidequest shows only on and off", async ($, on) => {
   world(on, CONNECTED);
 
-  expect(await sidequest($, "")).toBe("Ads: on.\nUsage: /sidequest on | off");
+  const text = await sidequest($, "");
+  expect(text.startsWith("Ads: on.\n")).toBe(true);
+  expect(text.endsWith("\nUsage: /sidequest on | off")).toBe(true);
 });
 
 for (const args of ["band on", "band off", "inline off"]) {
