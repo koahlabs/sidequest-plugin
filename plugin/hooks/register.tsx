@@ -40,6 +40,7 @@ type Pending = { key: string; expiresAt: number; userCode: string };
 let siteOnce: Promise<string> | undefined;
 let osOnce: Promise<Os | undefined> | undefined;
 let clientOnce: Promise<Client> | undefined;
+let pluginVersionOnce: Promise<string | undefined> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
 let bandTurnId: string | undefined;
@@ -143,6 +144,16 @@ function currentClient($: EngineInterface): Promise<Client> {
   return (clientOnce ??= $.env
     .get("CLAUDE_CODE_ENTRYPOINT")
     .then((entrypoint) => (entrypoint === "claude-desktop" ? "desktop" : "terminal")));
+}
+
+// `bun install` writes the gitignored .local file, so only a copy from a local checkout has it.
+function pluginVersion($: EngineInterface): Promise<string | undefined> {
+  return (pluginVersionOnce ??= Promise.all([
+    $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`),
+    $.fs.exists(`${$.plugin.root}/.local`),
+  ])
+    .then(([manifest, local]) => `${JSON.parse(manifest).version}${local ? "+local" : ""}`)
+    .catch(() => undefined));
 }
 
 // Polls until the site confirms the pending key, refuses it, or it expires.
@@ -270,6 +281,7 @@ async function requestAd(
     body: JSON.stringify({
       placement,
       client: await currentClient($),
+      pluginVersion: await pluginVersion($),
       question: question.slice(0, MAX_TEXT),
       answer: answer?.slice(0, MAX_TEXT),
       textLength: placement === "band" ? bandTextLength() : undefined,
@@ -338,6 +350,7 @@ export const register: Register = (on) => {
   siteOnce = undefined;
   osOnce = undefined;
   clientOnce = undefined;
+  pluginVersionOnce = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
 

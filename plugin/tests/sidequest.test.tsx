@@ -31,6 +31,7 @@ const NEXT_BAND_AD = {
 const PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const SITE = "https://getsidequest.dev";
+const PLUGIN_VERSION = "1.2.3";
 const IMPRESSION_URL = `${SITE}/api/impression/${AD.impressionId}`;
 const QUESTION = "What should I look for in running shoes?";
 const ANSWER = "Look at fit first.\n\nPrioritize fit and cushioning.";
@@ -55,6 +56,7 @@ type WorldOptions = {
   ad?: typeof AD;
   bandAds?: (typeof AD)[];
   holdFirstBand?: boolean;
+  localCheckout?: boolean;
   failingCommands?: string[];
   osEnv?: Record<string, string>;
   unameOutput?: string;
@@ -76,6 +78,7 @@ function world(
     ad = AD,
     bandAds = [],
     holdFirstBand = false,
+    localCheckout = false,
     failingCommands = [],
     osEnv = {},
     unameOutput = "Darwin\n",
@@ -141,6 +144,11 @@ function world(
     statuses.push(e.text);
     return { value: undefined };
   });
+  on("fs.read", async (_$, e) => {
+    if (!e.path.endsWith("/.claude-plugin/plugin.json")) throw new Error(`ENOENT: ${e.path}`);
+    return { value: JSON.stringify({ version: PLUGIN_VERSION }) };
+  });
+  on("fs.exists", async (_$, e) => ({ value: localCheckout && e.path.endsWith("/.local") }));
   on("session.start", async (_$, e) => ({ cwd: e.cwd }));
   on("command.register", async (_$, e) => ({ value: { command: e.name } }));
   mock.store(on, store);
@@ -385,10 +393,21 @@ test("sends the question, answer and session id with the device key", async ($, 
   expect(JSON.parse(request?.body ?? "{}")).toEqual({
     placement: "inline",
     client: "terminal",
+    pluginVersion: PLUGIN_VERSION,
     question: QUESTION,
     answer: ANSWER,
     conversationId: "session_abc",
   });
+});
+
+test("marks the plugin version as local when it runs from a local checkout", async ($, on) => {
+  const { calls } = world(on, { ...CONNECTED, localCheckout: true });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").pluginVersion).toBe(
+    `${PLUGIN_VERSION}+local`,
+  );
 });
 
 test("tells the site the ad request comes from Claude Desktop", async ($, on) => {
@@ -729,6 +748,7 @@ bandTest("a band request carries the question and no answer", async ($, on) => {
   expect(JSON.parse(bandRequests(calls)[0]?.body ?? "{}")).toEqual({
     placement: "band",
     client: "terminal",
+    pluginVersion: PLUGIN_VERSION,
     question: QUESTION,
     conversationId: "session_abc",
     textLength: 60,
