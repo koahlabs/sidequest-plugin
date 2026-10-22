@@ -115,3 +115,24 @@ bun run test
 bun run typecheck
 bun run lint
 ```
+
+## Test on Claude Desktop
+
+1. Install the plugin from this checkout:
+
+   ```
+   claude plugin marketplace add "$PWD"
+   claude plugin install sidequest@sidequest
+   ```
+
+2. Quit Claude Desktop and open it again.
+3. Start a new session and ask a question that matches an ad.
+4. Check that the ad shows under the reply and stays after the reply ends.
+5. After a code change, uninstall the plugin, install it again and start a new session.
+
+### Known problems on Desktop
+
+- Test with an installed plugin. Desktop checks a `--plugin-dir` plugin more strictly, so a good drawing can fail there.
+- Do not give a width to the `Box` that holds the engine's reply. Desktop then drops the drawing and shows the plain reply.
+- Desktop shows no error when it drops a drawing.
+- The plugin reports the impression before Desktop draws. A dropped drawing still bills an ad that nobody sees.
