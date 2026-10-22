@@ -46,6 +46,7 @@ let terminalProgramOnce: Promise<string | undefined> | undefined;
 let fullscreen: boolean | undefined;
 // Whether this terminal draws an Image's pixels; unknown until a blit answers.
 let imagesDraw: boolean | undefined;
+let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
 let bandTurnId: string | undefined;
@@ -215,18 +216,35 @@ async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: 
 
 // $.http.fetch returns text only, so curl fetches the icon and base64 encodes
 // it. Advertisers serve ICOs (Baseten) and large PNGs (Koah monograms), so sips
-// turns every icon into a PNG of at most 64px. It also shrinks the icon to one
-// pixel, the brand color, and prints it as #rrggbb from the BMP's ARGB word.
+// turns every icon into a PNG of at most 64px. It also shrinks the icon to 8x8
+// and prints the BMP's 64 ARGB words on a "px" line, for brandColor to pick from.
 const FETCH_ICON = `
 t=$(mktemp -d) || exit 1
 trap 'rm -rf "$t"' EXIT
 curl -sfL --max-time 5 "$1" -o "$t/icon" || exit 1
 sips -s format png -Z 64 "$t/icon" --out "$t/icon.png" >/dev/null 2>&1 || exit 1
 base64 < "$t/icon.png"
-sips -s format bmp -z 1 1 "$t/icon.png" --out "$t/px.bmp" >/dev/null 2>&1 || exit 0
+sips -s format bmp -z 8 8 "$t/icon.png" --out "$t/px.bmp" >/dev/null 2>&1 || exit 0
 at=$(od -An -tu4 -j10 -N4 "$t/px.bmp" | tr -d ' ')
-printf '#%06x\\n' $(( 0x$(od -An -tx4 -j"$at" -N4 "$t/px.bmp" | tr -d ' ') & 0xffffff ))
+echo px "$(od -v -An -tx4 -j"$at" -N256 "$t/px.bmp" | tr -s " \\n" "  ")"
 `;
+
+// The most saturated opaque pixel, so a logo's color wins over its background
+// and its transparent corners; a grey logo gets the average of its pixels.
+function brandColor(words: string[]): string | undefined {
+  const pixels = words
+    .map((word) => parseInt(word, 16))
+    .filter((argb) => argb >>> 24 >= 0x80)
+    .map((argb) => [(argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff]);
+  if (pixels.length === 0) return undefined;
+  const saturation = (rgb: number[]) => Math.max(...rgb) - Math.min(...rgb);
+  const vivid = pixels.reduce((best, rgb) => (saturation(rgb) > saturation(best) ? rgb : best));
+  const rgb =
+    saturation(vivid) >= 48
+      ? vivid
+      : [0, 1, 2].map((i) => Math.round(pixels.reduce((sum, p) => sum + p[i]!, 0) / pixels.length));
+  return `#${rgb.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+}
 
 type Icon = Pick<KoahAd, "iconPng" | "iconColor">;
 const icons = new Map<string, Icon>();
@@ -238,8 +256,13 @@ async function favicon($: EngineInterface, advertiser: KoahAd["advertiser"]): Pr
   const cached = icons.get(url);
   if (cached) return cached;
   const { exitCode, stdout } = await $.process.run(["/bin/sh", "-c", FETCH_ICON, "sh", url]);
-  const iconColor = stdout.match(/^#[0-9a-f]{6}$/m)?.[0];
-  const png = stdout.replace(/^#.*$/m, "").replace(/\s/g, "");
+  const words =
+    stdout
+      .match(/^px (.*)$/m)?.[1]
+      ?.trim()
+      .split(/\s+/) ?? [];
+  const iconColor = brandColor(words);
+  const png = stdout.replace(/^px .*$/m, "").replace(/\s/g, "");
   // Keep PNGs only: a bad image makes the engine refuse the whole tree.
   const icon = {
     iconPng: exitCode === 0 && png.startsWith("iVBORw0KGgo") ? png : undefined,
@@ -355,38 +378,51 @@ async function refreshBand($: EngineInterface, turnId: string) {
 type RenderEvent = Parameters<EngineInterface["ui"]["resolve"]>[0];
 
 // A blit to an Image is denied where the terminal draws its alt instead of the
-// pixels (Terminal.app). The first drawn ad asks; a no switches to the badge.
+// pixels (Terminal.app). The first drawn ad asks once; a no switches to the badge,
+// and no answer at all keeps the Image.
 async function probeImages($: EngineInterface, requestId: string, png: string) {
   for (const wait of [100, 500, 2000]) {
     await $.clock.sleep(wait);
     const { deny } = await $.ui.blit({ requestId, key: "logo", source: { png } });
-    if (!deny) return void (imagesDraw = true);
+    if (!deny) break;
     if (deny.includes("alt")) {
       imagesDraw = false;
       return $.ui.invalidate("ui.render");
     }
   }
+  imagesDraw = true;
 }
 
-// The advertiser's initial on its brand color, in text cells any terminal draws.
-function badgeCells(ad: KoahAd, color: string) {
-  const bg = parseInt(color.slice(1), 16);
-  const luma = 0.299 * (bg >> 16) + 0.587 * ((bg >> 8) & 0xff) + 0.114 * (bg & 0xff);
-  const fg = luma > 150 ? 0x000000 : 0xffffff;
-  const initial = ad.advertiser.name.trim().charAt(0).toUpperCase();
-  const glyph = /^[A-Z0-9]$/.test(initial) ? initial.charCodeAt(0) : 0x20;
-  const words = Uint32Array.of(0x20, fg, bg, glyph, fg, bg, 0x20, fg, bg);
-  return btoa(String.fromCharCode(...new Uint8Array(words.buffer)));
+function openAd($: EngineInterface, ad: KoahAd) {
+  void currentOs($).then((os) => openBrowser($, ad.adLink, os));
+}
+
+function luma(rgb: number) {
+  return 0.299 * (rgb >> 16) + 0.587 * ((rgb >> 8) & 0xff) + 0.114 * (rgb & 0xff);
+}
+
+// The brand color for hovered text, unless it is so dark or so light that a dark or a
+// light theme would hide it (a black Nike icon); then the theme's own color.
+function brandHover(ad: KoahAd) {
+  if (!ad.iconColor) return undefined;
+  const brightness = luma(parseInt(ad.iconColor.slice(1), 16));
+  return brightness > 50 && brightness < 205 ? { color: ad.iconColor } : undefined;
 }
 
 function adIcon($: EngineInterface, e: RenderEvent, ad: KoahAd) {
   if (e.surface === "terminal") {
-    const { Image, Raster } = $.ui.resolve(e);
+    const { Image, Text } = $.ui.resolve(e);
     if (ad.iconPng && imagesDraw !== false) {
       return <Image key="logo" source={{ png: ad.iconPng }} columns={2} rows={1} alt=" " />;
     }
     if (!ad.iconColor) return null;
-    return <Raster key="badge" columns={3} rows={1} cells={badgeCells(ad, ad.iconColor)} />;
+    // The advertiser's initial on its brand color, where the terminal draws no image.
+    const dark = luma(parseInt(ad.iconColor.slice(1), 16)) > 150;
+    return (
+      <Text color={dark ? "#000000" : "#ffffff"} backgroundColor={ad.iconColor}>
+        {` ${ad.advertiser.name.trim().charAt(0).toUpperCase()} `}
+      </Text>
+    );
   }
   if (ad.iconPng && e.surface === "desktop") {
     // The PNG inside an Svg, in a box of fixed size (2 cells by 1): in a row an
@@ -414,6 +450,7 @@ export const register: Register = (on) => {
   terminalProgramOnce = undefined;
   fullscreen = undefined;
   imagesDraw = undefined;
+  imagesProbe = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
 
@@ -535,13 +572,13 @@ export const register: Register = (on) => {
     if (slot === undefined || !isAd(slot.ad)) return next(e);
 
     const { ad } = slot;
-    const { Box, Text, Link, Markdown } = $.ui.resolve(e);
+    const { Box, Text, Link, Markdown, Button } = $.ui.resolve(e);
 
     await reportOnScreen($, ad);
 
     const icon = adIcon($, e, ad);
-    if (e.surface === "terminal" && ad.iconPng && imagesDraw === undefined) {
-      void probeImages($, e.requestId, ad.iconPng).catch(() => {});
+    if (e.surface === "terminal" && ad.iconPng) {
+      imagesProbe ??= probeImages($, e.requestId, ad.iconPng).catch(() => {});
     }
 
     // Box has no top-only border. The terminal gets a rule sized to fit (a cut
@@ -553,26 +590,28 @@ export const register: Register = (on) => {
         <Markdown text="---" />
       );
 
-    // A Link without OSC 8 (Terminal.app) is text and a dim URL that no click
-    // opens. Reply markdown with onLinkPress opens on a plain click in the
-    // fullscreen terminal, and stays the terminal's own link elsewhere.
+    // Only the fullscreen terminal reports clicks to Claude Code, so there a
+    // Button opens the ad; Terminal.app draws a Link as its text and a dim URL.
+    // Elsewhere the Link is the terminal's or the desktop's own.
+    const hover = brandHover(ad);
+    const label = `${ad.adCta} →`;
     const cta =
-      e.surface === "terminal" ? (
-        <Markdown
-          key="cta"
-          text={`[${ad.adCta.replace(/[[\]\\]/g, "\\$&")}](${ad.adLink})`}
-          onLinkPress={() => void currentOs($).then((os) => openBrowser($, ad.adLink, os))}
-        />
+      e.surface === "terminal" && e.viewport?.isFullscreen ? (
+        <Button key="cta" plain onPress={() => openAd($, ad)}>
+          <Text bold hover={hover}>
+            {label}
+          </Text>
+        </Button>
       ) : (
-        <Text>
-          <Link href={ad.adLink}>{ad.adCta}</Link>
+        <Text bold hover={hover}>
+          <Link href={ad.adLink}>{label}</Link>
         </Text>
       );
 
     const reply = await next(e);
 
     // The engine's own reply, a divider, then the ad: advertiser line, the ad
-    // text wrapped, and the CTA as a bordered link. The Box that holds the
+    // text wrapped, and the CTA in a bordered box. The Box that holds the
     // reply takes no width: Claude Desktop drops the whole tree when it has one.
     return (
       <Box flexDirection="column">
@@ -587,7 +626,7 @@ export const register: Register = (on) => {
             <Text dimColor>Sponsored</Text>
           </Box>
           <Text wrap="wrap">{ad.adText}</Text>
-          <Box alignSelf="flex-start" borderStyle="round" borderDimColor paddingX={1}>
+          <Box key="cta-box" alignSelf="flex-start" borderStyle="round" paddingX={1}>
             {cta}
           </Box>
         </Box>
@@ -648,7 +687,7 @@ export const register: Register = (on) => {
             plain
             hotkey="o"
             hover={{ scope: BAND_HOVER_SCOPE, underline: true }}
-            onPress={() => void currentOs($).then((os) => openBrowser($, ad.adLink, os))}
+            onPress={() => openAd($, ad)}
           >
             {ad.adCta}
           </Button>
