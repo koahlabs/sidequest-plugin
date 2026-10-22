@@ -44,6 +44,8 @@ let pluginVersionOnce: Promise<string | undefined> | undefined;
 let claudeVersionOnce: Promise<string | undefined> | undefined;
 let terminalProgramOnce: Promise<string | undefined> | undefined;
 let fullscreen: boolean | undefined;
+// Whether this terminal draws an Image's pixels; unknown until a blit answers.
+let imagesDraw: boolean | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
 let bandTurnId: string | undefined;
@@ -213,29 +215,36 @@ async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: 
 
 // $.http.fetch returns text only, so curl fetches the icon and base64 encodes
 // it. Advertisers serve ICOs (Baseten) and large PNGs (Koah monograms), so sips
-// turns every icon into a PNG of at most 64px.
+// turns every icon into a PNG of at most 64px. It also shrinks the icon to one
+// pixel, the brand color, and prints it as #rrggbb from the BMP's ARGB word.
 const FETCH_ICON = `
 t=$(mktemp -d) || exit 1
 trap 'rm -rf "$t"' EXIT
 curl -sfL --max-time 5 "$1" -o "$t/icon" || exit 1
 sips -s format png -Z 64 "$t/icon" --out "$t/icon.png" >/dev/null 2>&1 || exit 1
 base64 < "$t/icon.png"
+sips -s format bmp -z 1 1 "$t/icon.png" --out "$t/px.bmp" >/dev/null 2>&1 || exit 0
+at=$(od -An -tu4 -j10 -N4 "$t/px.bmp" | tr -d ' ')
+printf '#%06x\\n' $(( 0x$(od -An -tx4 -j"$at" -N4 "$t/px.bmp" | tr -d ' ') & 0xffffff ))
 `;
 
-const icons = new Map<string, string | undefined>();
-async function favicon(
-  $: EngineInterface,
-  advertiser: KoahAd["advertiser"],
-): Promise<string | undefined> {
+type Icon = Pick<KoahAd, "iconPng" | "iconColor">;
+const icons = new Map<string, Icon>();
+async function favicon($: EngineInterface, advertiser: KoahAd["advertiser"]): Promise<Icon> {
   const url =
     advertiser.iconUrl ||
     (advertiser.rootDomain ? `https://${advertiser.rootDomain}/favicon.ico` : null);
-  if (!url) return undefined;
-  if (icons.has(url)) return icons.get(url);
+  if (!url) return {};
+  const cached = icons.get(url);
+  if (cached) return cached;
   const { exitCode, stdout } = await $.process.run(["/bin/sh", "-c", FETCH_ICON, "sh", url]);
-  const png = stdout.replace(/\s/g, "");
+  const iconColor = stdout.match(/^#[0-9a-f]{6}$/m)?.[0];
+  const png = stdout.replace(/^#.*$/m, "").replace(/\s/g, "");
   // Keep PNGs only: a bad image makes the engine refuse the whole tree.
-  const icon = exitCode === 0 && png.startsWith("iVBORw0KGgo") ? png : undefined;
+  const icon = {
+    iconPng: exitCode === 0 && png.startsWith("iVBORw0KGgo") ? png : undefined,
+    iconColor,
+  };
   icons.set(url, icon);
   return icon;
 }
@@ -312,7 +321,7 @@ async function requestAd(
 
   if (res.status === 200) {
     const served = JSON.parse(res.text) as KoahAd;
-    served.iconPng = await favicon($, served.advertiser);
+    Object.assign(served, await favicon($, served.advertiser));
     return served;
   }
   if (res.status === 401) {
@@ -345,10 +354,39 @@ async function refreshBand($: EngineInterface, turnId: string) {
 
 type RenderEvent = Parameters<EngineInterface["ui"]["resolve"]>[0];
 
+// A blit to an Image is denied where the terminal draws its alt instead of the
+// pixels (Terminal.app). The first drawn ad asks; a no switches to the badge.
+async function probeImages($: EngineInterface, requestId: string, png: string) {
+  for (const wait of [100, 500, 2000]) {
+    await $.clock.sleep(wait);
+    const { deny } = await $.ui.blit({ requestId, key: "logo", source: { png } });
+    if (!deny) return void (imagesDraw = true);
+    if (deny.includes("alt")) {
+      imagesDraw = false;
+      return $.ui.invalidate("ui.render");
+    }
+  }
+}
+
+// The advertiser's initial on its brand color, in text cells any terminal draws.
+function badgeCells(ad: KoahAd, color: string) {
+  const bg = parseInt(color.slice(1), 16);
+  const luma = 0.299 * (bg >> 16) + 0.587 * ((bg >> 8) & 0xff) + 0.114 * (bg & 0xff);
+  const fg = luma > 150 ? 0x000000 : 0xffffff;
+  const initial = ad.advertiser.name.trim().charAt(0).toUpperCase();
+  const glyph = /^[A-Z0-9]$/.test(initial) ? initial.charCodeAt(0) : 0x20;
+  const words = Uint32Array.of(0x20, fg, bg, glyph, fg, bg, 0x20, fg, bg);
+  return btoa(String.fromCharCode(...new Uint8Array(words.buffer)));
+}
+
 function adIcon($: EngineInterface, e: RenderEvent, ad: KoahAd) {
-  if (ad.iconPng && e.surface === "terminal") {
-    const { Image } = $.ui.resolve(e);
-    return <Image source={{ png: ad.iconPng }} columns={2} rows={1} alt=" " />;
+  if (e.surface === "terminal") {
+    const { Image, Raster } = $.ui.resolve(e);
+    if (ad.iconPng && imagesDraw !== false) {
+      return <Image key="logo" source={{ png: ad.iconPng }} columns={2} rows={1} alt=" " />;
+    }
+    if (!ad.iconColor) return null;
+    return <Raster key="badge" columns={3} rows={1} cells={badgeCells(ad, ad.iconColor)} />;
   }
   if (ad.iconPng && e.surface === "desktop") {
     // The PNG inside an Svg, in a box of fixed size (2 cells by 1): in a row an
@@ -375,6 +413,7 @@ export const register: Register = (on) => {
   claudeVersionOnce = undefined;
   terminalProgramOnce = undefined;
   fullscreen = undefined;
+  imagesDraw = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
 
@@ -501,6 +540,9 @@ export const register: Register = (on) => {
     await reportOnScreen($, ad);
 
     const icon = adIcon($, e, ad);
+    if (e.surface === "terminal" && ad.iconPng && imagesDraw === undefined) {
+      void probeImages($, e.requestId, ad.iconPng).catch(() => {});
+    }
 
     // Box has no top-only border. The terminal gets a rule sized to fit (a cut
     // Text ends in an ellipsis); the remote surfaces draw a markdown rule.
@@ -509,6 +551,22 @@ export const register: Register = (on) => {
         <Text dimColor>{"─".repeat(Math.max((e.viewport?.columns ?? 64) - 4, 8))}</Text>
       ) : (
         <Markdown text="---" />
+      );
+
+    // A Link without OSC 8 (Terminal.app) is text and a dim URL that no click
+    // opens. Reply markdown with onLinkPress opens on a plain click in the
+    // fullscreen terminal, and stays the terminal's own link elsewhere.
+    const cta =
+      e.surface === "terminal" ? (
+        <Markdown
+          key="cta"
+          text={`[${ad.adCta.replace(/[[\]\\]/g, "\\$&")}](${ad.adLink})`}
+          onLinkPress={() => void currentOs($).then((os) => openBrowser($, ad.adLink, os))}
+        />
+      ) : (
+        <Text>
+          <Link href={ad.adLink}>{ad.adCta}</Link>
+        </Text>
       );
 
     const reply = await next(e);
@@ -530,9 +588,7 @@ export const register: Register = (on) => {
           </Box>
           <Text wrap="wrap">{ad.adText}</Text>
           <Box alignSelf="flex-start" borderStyle="round" borderDimColor paddingX={1}>
-            <Text>
-              <Link href={ad.adLink}>{ad.adCta}</Link>
-            </Text>
+            {cta}
           </Box>
         </Box>
       </Box>

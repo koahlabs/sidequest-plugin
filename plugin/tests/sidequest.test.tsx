@@ -471,10 +471,31 @@ for (const surface of ["terminal", "desktop"] as const) {
       expect(svg?.props.source).toContain(`data:image/png;base64,${PNG}`);
       expect(svg?.props.alt).toBe("Example Brand logo");
     }
-    expect(await ui.find({ type: "Link", text: /Explore/ })).toBeDefined();
+    if (surface === "terminal") {
+      const cta = await ui.find({ type: "Markdown" });
+      expect(cta?.props.text).toBe(`[Explore](${AD.adLink})`);
+    } else {
+      expect(await ui.find({ type: "Link", text: /Explore/ })).toBeDefined();
+    }
     await ui.unmount();
   });
 }
+
+test("clicking the call to action in the terminal opens the ad link in the browser", async ($, on) => {
+  const { clock, opened } = world(on, CONNECTED);
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  const ui = await $.ui.mount({
+    ...message("Prioritize fit and cushioning."),
+    surface: "terminal",
+  });
+  await ui.press({ key: "cta", link: { href: AD.adLink } });
+  await clock.settle();
+
+  expect(opened).toContainEqual(["open", AD.adLink]);
+  await ui.unmount();
+});
 
 test("draws the engine's own reply above the ad", async ($, on) => {
   world(on, CONNECTED);
