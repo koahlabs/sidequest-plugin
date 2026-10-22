@@ -41,6 +41,9 @@ let siteOnce: Promise<string> | undefined;
 let osOnce: Promise<Os | undefined> | undefined;
 let clientOnce: Promise<Client> | undefined;
 let pluginVersionOnce: Promise<string | undefined> | undefined;
+let claudeVersionOnce: Promise<string | undefined> | undefined;
+let terminalProgramOnce: Promise<string | undefined> | undefined;
+let fullscreen: boolean | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
 let bandTurnId: string | undefined;
@@ -153,6 +156,20 @@ function pluginVersion($: EngineInterface): Promise<string | undefined> {
     $.fs.exists(`${$.plugin.root}/.local`),
   ])
     .then(([manifest, local]) => `${JSON.parse(manifest).version}${local ? "+local" : ""}`)
+    .catch(() => undefined));
+}
+
+function claudeVersion($: EngineInterface): Promise<string | undefined> {
+  return (claudeVersionOnce ??= $.session
+    .version()
+    .then(({ version }) => version)
+    .catch(() => undefined));
+}
+
+// Only the terminal client has a terminal program; Claude Desktop sets none.
+function terminalProgram($: EngineInterface): Promise<string | undefined> {
+  return (terminalProgramOnce ??= currentClient($)
+    .then((client) => (client === "terminal" ? $.env.get("TERM_PROGRAM") : undefined))
     .catch(() => undefined));
 }
 
@@ -272,6 +289,7 @@ async function requestAd(
   placement: "inline" | "band",
   answer?: string,
 ): Promise<KoahAd | undefined> {
+  const client = await currentClient($);
   const res = await $.http.fetch(`${await site($)}/api/ad`, {
     method: "POST",
     headers: {
@@ -280,8 +298,11 @@ async function requestAd(
     },
     body: JSON.stringify({
       placement,
-      client: await currentClient($),
+      client,
       pluginVersion: await pluginVersion($),
+      claudeVersion: await claudeVersion($),
+      terminalProgram: await terminalProgram($),
+      fullscreen: client === "terminal" ? fullscreen : undefined,
       question: question.slice(0, MAX_TEXT),
       answer: answer?.slice(0, MAX_TEXT),
       textLength: placement === "band" ? bandTextLength() : undefined,
@@ -351,6 +372,9 @@ export const register: Register = (on) => {
   osOnce = undefined;
   clientOnce = undefined;
   pluginVersionOnce = undefined;
+  claudeVersionOnce = undefined;
+  terminalProgramOnce = undefined;
+  fullscreen = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
 
@@ -464,6 +488,7 @@ export const register: Register = (on) => {
 
   // The ad sits under the last message of the reply it was served for.
   on("ui.render", { component: "AssistantMessage" }, async ($, e, next) => {
+    fullscreen = e.viewport?.isFullscreen ?? fullscreen;
     if (!(await readSettings($)).inline) return next(e);
     const text = e.props.text.trim();
     const list = await read($, slots);
@@ -527,6 +552,7 @@ export const register: Register = (on) => {
 
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     bandColumns = e.props.bodyColumns;
+    fullscreen = e.viewport?.isFullscreen ?? fullscreen;
     if (!BAND_ADS) return next(e);
     if (e.surface !== "terminal" && e.surface !== "desktop") return next(e);
     if (e.props.hasSurvey) return next(e);

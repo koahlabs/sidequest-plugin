@@ -32,6 +32,8 @@ const PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const SITE = "https://getsidequest.dev";
 const PLUGIN_VERSION = "1.2.3";
+const CLAUDE_VERSION = "2.1.300";
+const TERM_PROGRAM = "ghostty";
 const IMPRESSION_URL = `${SITE}/api/impression/${AD.impressionId}`;
 const QUESTION = "What should I look for in running shoes?";
 const ANSWER = "Look at fit first.\n\nPrioritize fit and cushioning.";
@@ -152,7 +154,8 @@ function world(
   on("session.start", async (_$, e) => ({ cwd: e.cwd }));
   on("command.register", async (_$, e) => ({ value: { command: e.name } }));
   mock.store(on, store);
-  mock.env(on, osEnv);
+  on("session.version", async () => ({ value: { version: CLAUDE_VERSION } }));
+  mock.env(on, { TERM_PROGRAM, ...osEnv });
   on("settings.read", async (_$, e) => {
     const envs: Record<string, Record<string, string>> = {
       project: projectEnv,
@@ -394,6 +397,8 @@ test("sends the question, answer and session id with the device key", async ($, 
     placement: "inline",
     client: "terminal",
     pluginVersion: PLUGIN_VERSION,
+    claudeVersion: CLAUDE_VERSION,
+    terminalProgram: TERM_PROGRAM,
     question: QUESTION,
     answer: ANSWER,
     conversationId: "session_abc",
@@ -419,6 +424,36 @@ test("tells the site the ad request comes from Claude Desktop", async ($, on) =>
   await $.turn.complete(COMPLETE);
 
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("desktop");
+});
+
+test("a Claude Desktop request sends no terminal program or fullscreen", async ($, on) => {
+  const { calls } = world(on, {
+    ...CONNECTED,
+    osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+  });
+  const viewport = { columns: 120, rows: 40, isFullscreen: true };
+  const ui = await $.ui.mount({ ...message(ANSWER), surface: "desktop", viewport });
+  await ui.unmount();
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  const body = JSON.parse(inlineRequests(calls)[0]?.body ?? "{}");
+  expect([body.claudeVersion, body.terminalProgram, body.fullscreen]).toEqual([
+    CLAUDE_VERSION,
+    undefined,
+    undefined,
+  ]);
+});
+
+test("sends whether the terminal renders fullscreen, as the viewport says", async ($, on) => {
+  const { calls } = world(on, CONNECTED);
+  const viewport = { columns: 120, rows: 40, isFullscreen: true };
+  const ui = await $.ui.mount({ ...message(ANSWER), surface: "terminal", viewport });
+  await ui.unmount();
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").fullscreen).toBe(true);
 });
 
 for (const surface of ["terminal", "desktop"] as const) {
@@ -749,6 +784,8 @@ bandTest("a band request carries the question and no answer", async ($, on) => {
     placement: "band",
     client: "terminal",
     pluginVersion: PLUGIN_VERSION,
+    claudeVersion: CLAUDE_VERSION,
+    terminalProgram: TERM_PROGRAM,
     question: QUESTION,
     conversationId: "session_abc",
     textLength: 60,
