@@ -473,12 +473,14 @@ export const register: Register = (on) => {
         <Markdown text="---" />
       );
 
-    // The reply, a divider, then the ad: advertiser line, the ad text wrapped,
-    // and the CTA as a bordered link. No side padding, one gap between rows;
-    // rows stretch to the full width and only the button keeps its own.
+    const reply = await next(e);
+
+    // The engine's own reply, a divider, then the ad: advertiser line, the ad
+    // text wrapped, and the CTA as a bordered link. The Box that holds the
+    // reply takes no width: Claude Desktop drops the whole tree when it has one.
     return (
-      <Box flexDirection="column" width="100%">
-        <Markdown text={e.props.text} />
+      <Box flexDirection="column">
+        {reply}
         <Box flexDirection="column" width="100%" marginTop={1}>
           {divider}
         </Box>

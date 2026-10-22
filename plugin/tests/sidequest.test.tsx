@@ -422,13 +422,13 @@ for (const surface of ["terminal", "desktop"] as const) {
   });
 }
 
-test("draws the reply's text above the ad", async ($, on) => {
+test("draws the engine's own reply above the ad", async ($, on) => {
   world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.complete(COMPLETE);
 
   const ui = await $.ui.mount({ ...message("Prioritize fit and cushioning."), surface: "desktop" });
-  expect(await ui.find({ text: /Prioritize fit and cushioning/ })).toBeDefined();
+  expect(await ui.find({ text: /engine row/ })).toBeDefined();
   await ui.unmount();
 });
 

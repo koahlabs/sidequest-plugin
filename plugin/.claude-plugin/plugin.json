@@ -1,6 +1,6 @@
 {
   "name": "sidequest",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Shows a sponsored Koah ad under each answer, served through the Sidequest site",
   "author": {
     "name": "Koah Labs"
