@@ -11,7 +11,7 @@ const POLL_MS = 1000;
 const NEVER_ENTER = "Only enter a code that Claude showed you.";
 const connectUrl = (base: string, userCode: string) => `${base}/connect?code=${userCode}`;
 const codeNotice = (base: string, userCode: string) =>
-  `sidequest: copy ${connectUrl(base, userCode)} into your browser. ${NEVER_ENTER}`;
+  `copy ${connectUrl(base, userCode)} into your browser. ${NEVER_ENTER}`;
 
 const slots = atom({ plugin: "sidequest", key: "slots" } as const, [] as AdSlot[]);
 const band = atom({ plugin: "sidequest", key: "band" } as const, null as KoahAd | null);
@@ -392,11 +392,11 @@ async function requestAd(
     return served;
   }
   if (res.status === 401) {
-    $.ui.status("sidequest: not connected — run /sidequest-connect");
+    $.ui.status("not connected — run /sidequest-connect");
   } else if (res.status === 403) {
-    $.ui.status("sidequest: account suspended");
+    $.ui.status("account suspended");
   } else if (res.status !== 204) {
-    $.ui.status("sidequest: ads unavailable — trying again next prompt");
+    $.ui.status("ads unavailable — trying again next prompt");
   }
   return undefined;
 }
