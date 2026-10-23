@@ -397,6 +397,20 @@ test("shows the suspended status when the site refuses a banned account", async 
   expect(statuses).toContain("sidequest: account suspended");
 });
 
+test("shows a plain status when the site cannot serve ads", async ($, on) => {
+  const { statuses } = world(on, { ...CONNECTED, adStatus: 502 });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  expect(statuses).toContain("sidequest: ads unavailable — trying again next prompt");
+});
+
+test("clears the status line when an ad is served", async ($, on) => {
+  const { statuses } = world(on, { ...CONNECTED, adStatus: 200 });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  expect(statuses).toContain(undefined);
+});
+
 test("sends the question, answer and session id with the device key", async ($, on) => {
   const { calls } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });

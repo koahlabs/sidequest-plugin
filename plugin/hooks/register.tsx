@@ -384,6 +384,8 @@ async function requestAd(
     }),
   });
 
+  // A served or empty answer means the site works again, so an old problem leaves the status line.
+  if (res.status === 200 || res.status === 204) $.ui.status(undefined);
   if (res.status === 200) {
     const served = JSON.parse(res.text) as KoahAd;
     Object.assign(served, await favicon($, served.advertiser));
@@ -394,7 +396,7 @@ async function requestAd(
   } else if (res.status === 403) {
     $.ui.status("sidequest: account suspended");
   } else if (res.status !== 204) {
-    $.ui.status(`sidequest: ad request ${res.status}`);
+    $.ui.status("sidequest: ads unavailable — trying again next prompt");
   }
   return undefined;
 }
