@@ -7,6 +7,8 @@ export type KoahAd = {
   impressionId: string;
   /** The advertiser favicon as base64 PNG, fetched by the mod. */
   iconPng?: string;
+  /** The favicon's average color as #rrggbb, for a badge where the terminal draws no image. */
+  iconColor?: string;
 };
 
 /** One ad per answered turn, matched to its last message by the answer text. */

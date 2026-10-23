@@ -11,7 +11,7 @@ const POLL_MS = 1000;
 const NEVER_ENTER = "Only enter a code that Claude showed you.";
 const connectUrl = (base: string, userCode: string) => `${base}/connect?code=${userCode}`;
 const codeNotice = (base: string, userCode: string) =>
-  `sidequest: copy ${connectUrl(base, userCode)} into your browser. ${NEVER_ENTER}`;
+  `copy ${connectUrl(base, userCode)} into your browser. ${NEVER_ENTER}`;
 
 const slots = atom({ plugin: "sidequest", key: "slots" } as const, [] as AdSlot[]);
 const band = atom({ plugin: "sidequest", key: "band" } as const, null as KoahAd | null);
@@ -39,8 +39,14 @@ type Pending = { key: string; expiresAt: number; userCode: string };
 
 let siteOnce: Promise<string> | undefined;
 let osOnce: Promise<Os | undefined> | undefined;
-let clientOnce: Promise<Client> | undefined;
+let clientOnce: Promise<string | undefined> | undefined;
 let pluginVersionOnce: Promise<string | undefined> | undefined;
+let claudeVersionOnce: Promise<string | undefined> | undefined;
+let terminalProgramOnce: Promise<string | undefined> | undefined;
+let fullscreen: boolean | undefined;
+// Whether this terminal draws an Image's pixels; unknown until a blit answers.
+let imagesDraw: boolean | undefined;
+let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
 let bandTurnId: string | undefined;
@@ -116,6 +122,32 @@ async function openBrowser($: EngineInterface, url: string, os: Os | undefined) 
   }
 }
 
+const joined = (...parts: (string | false | undefined)[]) => parts.filter(Boolean).join(" · ");
+
+async function statusLines($: EngineInterface, current: Settings) {
+  const device = await deviceMetadata($);
+  const os = await currentOs($);
+  const base = await site($);
+  const app = joined(
+    device.client,
+    device.terminalProgram,
+    device.fullscreen !== undefined && (device.fullscreen ? "fullscreen" : "not fullscreen"),
+  );
+  const account = (await storedDeviceKey($))
+    ? "connected"
+    : "not connected — run /sidequest-connect";
+  return [
+    settingsText(current),
+    joined(
+      device.pluginVersion && `Sidequest v${device.pluginVersion}`,
+      device.claudeVersion && `Claude Code ${device.claudeVersion}`,
+    ),
+    app && `App: ${app}`,
+    joined(os && `OS: ${os}`, `Account: ${account}`),
+    base !== SITE && `Site: ${base}`,
+  ].filter(Boolean);
+}
+
 function newDeviceKey(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const b64 = btoa(String.fromCharCode(...bytes));
@@ -138,12 +170,16 @@ function currentOs($: EngineInterface): Promise<Os | undefined> {
   return (osOnce ??= detectOs($));
 }
 
-// Claude Code sets the entrypoint; the site turns the client into the Koah slot it reports by.
-type Client = "desktop" | "terminal";
-function currentClient($: EngineInterface): Promise<Client> {
+// Claude Code sets the entrypoint. The site turns the two known clients into the Koah slot it
+// reports by; any other entrypoint (the IDE extension, the SDK) is sent as it is.
+const CLIENTS = new Map([
+  ["claude-desktop", "desktop"],
+  ["cli", "terminal"],
+]);
+function currentClient($: EngineInterface): Promise<string | undefined> {
   return (clientOnce ??= $.env
     .get("CLAUDE_CODE_ENTRYPOINT")
-    .then((entrypoint) => (entrypoint === "claude-desktop" ? "desktop" : "terminal")));
+    .then((entrypoint) => (entrypoint ? (CLIENTS.get(entrypoint) ?? entrypoint) : undefined)));
 }
 
 // `bun install` writes the gitignored .local file, so only a copy from a local checkout has it.
@@ -154,6 +190,37 @@ function pluginVersion($: EngineInterface): Promise<string | undefined> {
   ])
     .then(([manifest, local]) => `${JSON.parse(manifest).version}${local ? "+local" : ""}`)
     .catch(() => undefined));
+}
+
+function claudeVersion($: EngineInterface): Promise<string | undefined> {
+  return (claudeVersionOnce ??= $.session
+    .version()
+    .then(({ version }) => version)
+    .catch(() => undefined));
+}
+
+// Only Claude in a terminal has one. TERM_PROGRAM is inherited (kitty sets none, so a
+// kitty opened from Ghostty says "ghostty"); the bundle id is the app's own when macOS
+// launched it. Inside tmux it is the app that started the tmux server.
+function terminalProgram($: EngineInterface): Promise<string | undefined> {
+  return (terminalProgramOnce ??= currentClient($)
+    .then(async (client) =>
+      client === "terminal"
+        ? ((await $.env.get("__CFBundleIdentifier")) ?? (await $.env.get("TERM_PROGRAM")))
+        : undefined,
+    )
+    .catch(() => undefined));
+}
+
+// What the site shows for this computer; sent with the ad request and when connecting.
+async function deviceMetadata($: EngineInterface) {
+  return {
+    client: await currentClient($),
+    pluginVersion: await pluginVersion($),
+    claudeVersion: await claudeVersion($),
+    terminalProgram: await terminalProgram($),
+    fullscreen,
+  };
 }
 
 // Polls until the site confirms the pending key, refuses it, or it expires.
@@ -196,29 +263,58 @@ async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: 
 
 // $.http.fetch returns text only, so curl fetches the icon and base64 encodes
 // it. Advertisers serve ICOs (Baseten) and large PNGs (Koah monograms), so sips
-// turns every icon into a PNG of at most 64px.
+// turns every icon into a PNG of at most 64px. It also shrinks the icon to 8x8
+// and prints the BMP's 64 ARGB words on a "px" line, for brandColor to pick from.
 const FETCH_ICON = `
 t=$(mktemp -d) || exit 1
 trap 'rm -rf "$t"' EXIT
 curl -sfL --max-time 5 "$1" -o "$t/icon" || exit 1
 sips -s format png -Z 64 "$t/icon" --out "$t/icon.png" >/dev/null 2>&1 || exit 1
 base64 < "$t/icon.png"
+sips -s format bmp -z 8 8 "$t/icon.png" --out "$t/px.bmp" >/dev/null 2>&1 || exit 0
+at=$(od -An -tu4 -j10 -N4 "$t/px.bmp" | tr -d ' ')
+echo px "$(od -v -An -tx4 -j"$at" -N256 "$t/px.bmp" | tr -s " \\n" "  ")"
 `;
 
-const icons = new Map<string, string | undefined>();
-async function favicon(
-  $: EngineInterface,
-  advertiser: KoahAd["advertiser"],
-): Promise<string | undefined> {
+// The most saturated opaque pixel, so a logo's color wins over its background
+// and its transparent corners; a grey logo gets the average of its pixels.
+function brandColor(words: string[]): string | undefined {
+  const pixels = words
+    .map((word) => parseInt(word, 16))
+    .filter((argb) => argb >>> 24 >= 0x80)
+    .map((argb) => [(argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff]);
+  if (pixels.length === 0) return undefined;
+  const saturation = (rgb: number[]) => Math.max(...rgb) - Math.min(...rgb);
+  const vivid = pixels.reduce((best, rgb) => (saturation(rgb) > saturation(best) ? rgb : best));
+  const rgb =
+    saturation(vivid) >= 48
+      ? vivid
+      : [0, 1, 2].map((i) => Math.round(pixels.reduce((sum, p) => sum + p[i]!, 0) / pixels.length));
+  return `#${rgb.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+}
+
+type Icon = Pick<KoahAd, "iconPng" | "iconColor">;
+const icons = new Map<string, Icon>();
+async function favicon($: EngineInterface, advertiser: KoahAd["advertiser"]): Promise<Icon> {
   const url =
     advertiser.iconUrl ||
     (advertiser.rootDomain ? `https://${advertiser.rootDomain}/favicon.ico` : null);
-  if (!url) return undefined;
-  if (icons.has(url)) return icons.get(url);
+  if (!url) return {};
+  const cached = icons.get(url);
+  if (cached) return cached;
   const { exitCode, stdout } = await $.process.run(["/bin/sh", "-c", FETCH_ICON, "sh", url]);
-  const png = stdout.replace(/\s/g, "");
+  const words =
+    stdout
+      .match(/^px (.*)$/m)?.[1]
+      ?.trim()
+      .split(/\s+/) ?? [];
+  const iconColor = brandColor(words);
+  const png = stdout.replace(/^px .*$/m, "").replace(/\s/g, "");
   // Keep PNGs only: a bad image makes the engine refuse the whole tree.
-  const icon = exitCode === 0 && png.startsWith("iVBORw0KGgo") ? png : undefined;
+  const icon = {
+    iconPng: exitCode === 0 && png.startsWith("iVBORw0KGgo") ? png : undefined,
+    iconColor,
+  };
   icons.set(url, icon);
   return icon;
 }
@@ -280,8 +376,7 @@ async function requestAd(
     },
     body: JSON.stringify({
       placement,
-      client: await currentClient($),
-      pluginVersion: await pluginVersion($),
+      ...(await deviceMetadata($)),
       question: question.slice(0, MAX_TEXT),
       answer: answer?.slice(0, MAX_TEXT),
       textLength: placement === "band" ? bandTextLength() : undefined,
@@ -289,17 +384,19 @@ async function requestAd(
     }),
   });
 
+  // A served or empty answer means the site works again, so an old problem leaves the status line.
+  if (res.status === 200 || res.status === 204) $.ui.status(undefined);
   if (res.status === 200) {
     const served = JSON.parse(res.text) as KoahAd;
-    served.iconPng = await favicon($, served.advertiser);
+    Object.assign(served, await favicon($, served.advertiser));
     return served;
   }
   if (res.status === 401) {
-    $.ui.status("sidequest: not connected — run /sidequest-connect");
+    $.ui.status("not connected — run /sidequest-connect");
   } else if (res.status === 403) {
-    $.ui.status("sidequest: account suspended");
+    $.ui.status("account suspended");
   } else if (res.status !== 204) {
-    $.ui.status(`sidequest: ad request ${res.status}`);
+    $.ui.status("ads unavailable — trying again next prompt");
   }
   return undefined;
 }
@@ -324,15 +421,57 @@ async function refreshBand($: EngineInterface, turnId: string) {
 
 type RenderEvent = Parameters<EngineInterface["ui"]["resolve"]>[0];
 
-function adIcon($: EngineInterface, e: RenderEvent, ad: KoahAd) {
-  if (ad.iconPng && e.surface === "terminal") {
-    const { Image } = $.ui.resolve(e);
-    return <Image source={{ png: ad.iconPng }} columns={2} rows={1} alt=" " />;
+// A blit to an Image is denied where the terminal draws its alt instead of the
+// pixels (Terminal.app). The first drawn ad asks once; a no switches to the badge,
+// and no answer at all keeps the Image.
+async function probeImages($: EngineInterface, requestId: string, png: string) {
+  for (const wait of [100, 500, 2000]) {
+    await $.clock.sleep(wait);
+    const { deny } = await $.ui.blit({ requestId, key: "logo", source: { png } });
+    if (!deny) break;
+    if (deny.includes("alt")) {
+      imagesDraw = false;
+      return $.ui.invalidate("ui.render");
+    }
   }
-  if (ad.iconPng && e.surface === "desktop") {
+  imagesDraw = true;
+}
+
+function openAd($: EngineInterface, ad: KoahAd) {
+  void currentOs($).then((os) => openBrowser($, ad.adLink, os));
+}
+
+function luma(rgb: number) {
+  return 0.299 * (rgb >> 16) + 0.587 * ((rgb >> 8) & 0xff) + 0.114 * (rgb & 0xff);
+}
+
+// The brand color for hovered text, unless it is so dark or so light that a dark or a
+// light theme would hide it (a black Nike icon); then the theme's own color.
+function brandHover(ad: KoahAd) {
+  if (!ad.iconColor) return undefined;
+  const brightness = luma(parseInt(ad.iconColor.slice(1), 16));
+  return brightness > 50 && brightness < 205 ? { color: ad.iconColor } : undefined;
+}
+
+function adIcon($: EngineInterface, e: RenderEvent, ad: KoahAd) {
+  if (e.surface === "terminal") {
+    const { Image, Text } = $.ui.resolve(e);
+    if (ad.iconPng && imagesDraw !== false) {
+      return <Image key="logo" source={{ png: ad.iconPng }} columns={2} rows={1} alt=" " />;
+    }
+    if (!ad.iconColor) return null;
+    // The advertiser's initial on its brand color, where the terminal draws no image.
+    const dark = luma(parseInt(ad.iconColor.slice(1), 16)) > 150;
+    return (
+      <Text color={dark ? "#000000" : "#ffffff"} backgroundColor={ad.iconColor}>
+        {` ${ad.advertiser.name.trim().charAt(0).toUpperCase()} `}
+      </Text>
+    );
+  }
+  if (ad.iconPng && (e.surface === "desktop" || e.surface === "vscode")) {
     // The PNG inside an Svg, in a box of fixed size (2 cells by 1): in a row an
-    // Svg with no sized box collapses. The desktop draws nothing for an Svg
-    // whose alt is blank, so it carries the advertiser's name.
+    // Svg with no sized box collapses. Desktop and the IDE panel draw nothing
+    // for an Svg whose alt is blank, so it carries the advertiser's name.
     const { Box, Svg } = $.ui.resolve(e);
     const source =
       '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' +
@@ -351,6 +490,11 @@ export const register: Register = (on) => {
   osOnce = undefined;
   clientOnce = undefined;
   pluginVersionOnce = undefined;
+  claudeVersionOnce = undefined;
+  terminalProgramOnce = undefined;
+  fullscreen = undefined;
+  imagesDraw = undefined;
+  imagesProbe = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
 
@@ -382,7 +526,7 @@ export const register: Register = (on) => {
       text,
       context: ["The user ran /sidequest. Its output is for them only. Do not mention it."],
     });
-    if (!args) return reply(`${settingsText(current)}\n${USAGE}`);
+    if (!args) return reply(`${(await statusLines($, current)).join("\n")}\n${USAGE}`);
     if (!change) return reply(USAGE);
 
     const next = { ...current, ...change };
@@ -401,7 +545,7 @@ export const register: Register = (on) => {
       .fetch(`${base}/api/device`, {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ os }),
+        body: JSON.stringify({ os, ...(await deviceMetadata($)) }),
       })
       .catch(() => undefined);
     if (res?.status === 403) return { text: "only available in the US for now." };
@@ -464,6 +608,7 @@ export const register: Register = (on) => {
 
   // The ad sits under the last message of the reply it was served for.
   on("ui.render", { component: "AssistantMessage" }, async ($, e, next) => {
+    if (e.surface === "terminal") fullscreen = e.viewport?.isFullscreen ?? fullscreen;
     if (!(await readSettings($)).inline) return next(e);
     const text = e.props.text.trim();
     const list = await read($, slots);
@@ -471,44 +616,75 @@ export const register: Register = (on) => {
     if (slot === undefined || !isAd(slot.ad)) return next(e);
 
     const { ad } = slot;
-    const { Box, Text, Link, Markdown } = $.ui.resolve(e);
+    const { Box, Text, Link, Markdown, Button } = $.ui.resolve(e);
 
     await reportOnScreen($, ad);
 
     const icon = adIcon($, e, ad);
+    if (e.surface === "terminal" && ad.iconPng) {
+      imagesProbe ??= probeImages($, e.requestId, ad.iconPng).catch(() => {});
+    }
 
     // Box has no top-only border. The terminal gets a rule sized to fit (a cut
-    // Text ends in an ellipsis); the remote surfaces draw a markdown rule.
+    // Text ends in an ellipsis); Desktop draws a markdown rule. The IDE panel
+    // frames the drawing itself, so it gets none.
     const divider =
-      e.surface === "terminal" ? (
-        <Text dimColor>{"─".repeat(Math.max((e.viewport?.columns ?? 64) - 4, 8))}</Text>
+      e.surface === "vscode" ? null : (
+        <Box flexDirection="column" width="100%" marginTop={1}>
+          {e.surface === "terminal" ? (
+            <Text dimColor>{"─".repeat(Math.max((e.viewport?.columns ?? 64) - 4, 8))}</Text>
+          ) : (
+            <Markdown text="---" />
+          )}
+        </Box>
+      );
+
+    // Only the fullscreen terminal reports clicks to Claude Code, so there a
+    // Button opens the ad; Terminal.app draws a Link as its text and a dim URL.
+    // The IDE panel draws a Button as its own button. Elsewhere the Link is the
+    // terminal's or the desktop's own.
+    const hover = brandHover(ad);
+    const label = `${ad.adCta} →`;
+    const cta =
+      e.surface === "vscode" ? (
+        <Box flexDirection="row">
+          <Button key="cta" onPress={() => openAd($, ad)}>
+            {label}
+          </Button>
+        </Box>
       ) : (
-        <Markdown text="---" />
+        <Box key="cta-box" alignSelf="flex-start" borderStyle="round" paddingX={1}>
+          {e.surface === "terminal" && e.viewport?.isFullscreen ? (
+            <Button key="cta" plain onPress={() => openAd($, ad)}>
+              <Text bold hover={hover}>
+                {label}
+              </Text>
+            </Button>
+          ) : (
+            <Text bold hover={hover}>
+              <Link href={ad.adLink}>{label}</Link>
+            </Text>
+          )}
+        </Box>
       );
 
     const reply = await next(e);
 
     // The engine's own reply, a divider, then the ad: advertiser line, the ad
-    // text wrapped, and the CTA as a bordered link. The Box that holds the
-    // reply takes no width: Claude Desktop drops the whole tree when it has one.
+    // text wrapped, and the CTA. The Box that holds the reply takes no width:
+    // Claude Desktop drops the whole tree when it has one.
     return (
       <Box flexDirection="column">
         {reply}
-        <Box flexDirection="column" width="100%" marginTop={1}>
-          {divider}
-        </Box>
-        <Box flexDirection="column" width="100%" gap={1} marginTop={1}>
+        {divider}
+        <Box flexDirection="column" width="100%" gap={1} marginTop={divider ? 1 : 0}>
           <Box flexDirection="row" gap={1}>
             {icon}
             <Text bold>{ad.advertiser.name}</Text>
             <Text dimColor>Sponsored</Text>
           </Box>
           <Text wrap="wrap">{ad.adText}</Text>
-          <Box alignSelf="flex-start" borderStyle="round" borderDimColor paddingX={1}>
-            <Text>
-              <Link href={ad.adLink}>{ad.adCta}</Link>
-            </Text>
-          </Box>
+          {cta}
         </Box>
       </Box>
     );
@@ -527,6 +703,7 @@ export const register: Register = (on) => {
 
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     bandColumns = e.props.bodyColumns;
+    if (e.surface === "terminal") fullscreen = e.viewport?.isFullscreen ?? fullscreen;
     if (!BAND_ADS) return next(e);
     if (e.surface !== "terminal" && e.surface !== "desktop") return next(e);
     if (e.props.hasSurvey) return next(e);
@@ -566,7 +743,7 @@ export const register: Register = (on) => {
             plain
             hotkey="o"
             hover={{ scope: BAND_HOVER_SCOPE, underline: true }}
-            onPress={() => void currentOs($).then((os) => openBrowser($, ad.adLink, os))}
+            onPress={() => openAd($, ad)}
           >
             {ad.adCta}
           </Button>
