@@ -49,9 +49,9 @@ let imagesDraw: boolean | undefined;
 let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
-// Ads follow the person's own prompts, not turns that background tasks, schedules or peers start.
+// Ads follow prompts typed in this client, not turns that background tasks, schedules, peers or Remote Control start.
 // Claude Desktop and the IDE extension are SDK hosts, so a prompt typed there arrives as "sdk".
-const PERSON_ORIGINS = new Set(["composer", "bridge", "sdk"]);
+const PERSON_ORIGINS = new Set(["composer", "sdk"]);
 let nextTurnFromPerson = true;
 let otherTurnId: string | undefined;
 let bandTurnId: string | undefined;

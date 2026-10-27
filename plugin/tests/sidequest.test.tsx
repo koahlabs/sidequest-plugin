@@ -887,6 +887,16 @@ test("a prompt typed in Claude Desktop gets an inline ad", async ($, on) => {
   expect(inlineRequests(calls)).toHaveLength(1);
 });
 
+test("a prompt sent through Remote Control sends no ad request", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "bridge" } });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
+});
+
 bandTest("a turn with no text asks for a band ad with the earlier question", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD, NEXT_BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
