@@ -49,6 +49,11 @@ let imagesDraw: boolean | undefined;
 let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
+// Ads follow the person's own prompts, not turns that background tasks, schedules or peers start.
+// Claude Desktop and the IDE extension are SDK hosts, so a prompt typed there arrives as "sdk".
+const PERSON_ORIGINS = new Set(["composer", "bridge", "sdk"]);
+let nextTurnFromPerson = true;
+let otherTurnId: string | undefined;
 let bandTurnId: string | undefined;
 let bandColumns: number | undefined;
 
@@ -581,8 +586,17 @@ export const register: Register = (on) => {
     };
   });
 
+  on("prompt.submit", async ($, e, next) => {
+    if (e.turnId === undefined) nextTurnFromPerson = PERSON_ORIGINS.has(e.origin.kind);
+    return next(e);
+  });
+
   on("turn.start", async ($, e, next) => {
-    if (e.agentId === undefined) {
+    if (e.agentId !== undefined) return next(e);
+    const fromPerson = nextTurnFromPerson;
+    nextTurnFromPerson = true;
+    if (!fromPerson) otherTurnId = e.turnId;
+    else {
       if (e.text.trim()) question = e.text;
       bandTurnId = e.turnId;
       // The band and inline requests each use one of the site's daily ad requests.
@@ -593,7 +607,8 @@ export const register: Register = (on) => {
 
   on("turn.complete", async ($, e, next) => {
     const result = await next(e);
-    if (e.agentId !== undefined || e.reason !== "answer" || !e.answer.trim()) return result;
+    if (e.agentId !== undefined || e.turnId === otherTurnId) return result;
+    if (e.reason !== "answer" || !e.answer.trim()) return result;
     if (!(await readSettings($)).inline) return result;
     const key = await storedDeviceKey($);
     if (!key || !question.trim()) return result;
