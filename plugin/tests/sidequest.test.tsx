@@ -877,14 +877,14 @@ test("after a background task's turn, the next typed prompt gets an inline ad fo
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").question).toBe(QUESTION);
 });
 
-test("a prompt typed in Claude Desktop gets an inline ad", async ($, on) => {
+test("a claude -p run sends no ad request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "sdk" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
-  expect(inlineRequests(calls)).toHaveLength(1);
+  expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
 });
 
 test("a prompt sent through Remote Control sends no ad request", async ($, on) => {

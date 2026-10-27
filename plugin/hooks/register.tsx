@@ -49,9 +49,8 @@ let imagesDraw: boolean | undefined;
 let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
-// Ads follow prompts typed in this client, not turns that background tasks, schedules, peers or Remote Control start.
-// Claude Desktop and the IDE extension are SDK hosts, so a prompt typed there arrives as "sdk".
-const PERSON_ORIGINS = new Set(["composer", "sdk"]);
+// Ads follow prompts typed in the terminal or Claude Desktop (both "composer"), not turns that
+// background tasks, schedules, peers, Remote Control or `claude -p` start.
 let nextTurnFromPerson = true;
 let otherTurnId: string | undefined;
 let bandTurnId: string | undefined;
@@ -587,7 +586,7 @@ export const register: Register = (on) => {
   });
 
   on("prompt.submit", async ($, e, next) => {
-    if (e.turnId === undefined) nextTurnFromPerson = PERSON_ORIGINS.has(e.origin.kind);
+    if (e.turnId === undefined) nextTurnFromPerson = e.origin.kind === "composer";
     return next(e);
   });
 
