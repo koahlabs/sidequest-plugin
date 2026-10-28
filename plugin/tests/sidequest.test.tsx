@@ -852,6 +852,51 @@ bandTest("a turn started by an agent sends no band request", async ($, on) => {
   expect(bandRequests(calls)).toHaveLength(0);
 });
 
+const NOTIFICATION = "<task-notification><task-id>b1</task-id></task-notification>";
+
+test("a turn a background task starts sends no ad request", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+  await $.prompt.submit({ text: NOTIFICATION, wait: false, origin: { kind: "task-notification" } });
+  await $.turn.start({ text: NOTIFICATION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
+});
+
+test("after a background task's turn, the next typed prompt gets an inline ad for its own question", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+  await $.prompt.submit({ text: NOTIFICATION, wait: false, origin: { kind: "task-notification" } });
+  await $.turn.start({ text: NOTIFICATION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+  await $.turn.start({ text: QUESTION, turnId: "t2" });
+  await $.turn.complete({ ...COMPLETE, turnId: "t2" });
+  await clock.settle();
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").question).toBe(QUESTION);
+});
+
+test("a claude -p run sends no ad request", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "sdk" } });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
+});
+
+test("a prompt sent through Remote Control sends no ad request", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "bridge" } });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
+});
+
 bandTest("a turn with no text asks for a band ad with the earlier question", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD, NEXT_BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });

@@ -49,6 +49,10 @@ let imagesDraw: boolean | undefined;
 let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 let question = "";
+// Ads follow prompts typed in the terminal or Claude Desktop (both "composer"), not turns that
+// background tasks, schedules, peers, Remote Control or `claude -p` start.
+let nextTurnFromPerson = true;
+let otherTurnId: string | undefined;
 let bandTurnId: string | undefined;
 let bandColumns: number | undefined;
 
@@ -581,8 +585,17 @@ export const register: Register = (on) => {
     };
   });
 
+  on("prompt.submit", async ($, e, next) => {
+    if (e.turnId === undefined) nextTurnFromPerson = e.origin.kind === "composer";
+    return next(e);
+  });
+
   on("turn.start", async ($, e, next) => {
-    if (e.agentId === undefined) {
+    if (e.agentId !== undefined) return next(e);
+    const fromPerson = nextTurnFromPerson;
+    nextTurnFromPerson = true;
+    if (!fromPerson) otherTurnId = e.turnId;
+    else {
       if (e.text.trim()) question = e.text;
       bandTurnId = e.turnId;
       // The band and inline requests each use one of the site's daily ad requests.
@@ -593,7 +606,8 @@ export const register: Register = (on) => {
 
   on("turn.complete", async ($, e, next) => {
     const result = await next(e);
-    if (e.agentId !== undefined || e.reason !== "answer" || !e.answer.trim()) return result;
+    if (e.agentId !== undefined || e.turnId === otherTurnId) return result;
+    if (e.reason !== "answer" || !e.answer.trim()) return result;
     if (!(await readSettings($)).inline) return result;
     const key = await storedDeviceKey($);
     if (!key || !question.trim()) return result;
