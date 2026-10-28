@@ -11,8 +11,8 @@ export type KoahAd = {
   iconColor?: string;
 };
 
-/** One ad per answered turn, matched to its last message by the answer text. */
-export type AdSlot = { answer: string; ad: KoahAd };
+/** One ad per answered turn, matched to its last message by the message id. */
+export type AdSlot = { messageId: string; ad: KoahAd };
 
 declare module "claude-code" {
   interface PluginState {

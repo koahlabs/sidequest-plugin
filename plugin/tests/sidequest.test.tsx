@@ -1,5 +1,5 @@
 import { expect, mock, test } from "claude-code/testing";
-import type { On } from "claude-code";
+import type { On, SessionAppendInput } from "claude-code";
 
 import { BAND_ADS } from "../hooks/features";
 
@@ -28,6 +28,12 @@ const NEXT_BAND_AD = {
   impressionId: "66666666-7777-4888-8999-000000000000",
 };
 
+const SECOND_AD = {
+  ...AD,
+  advertiser: { ...AD.advertiser, name: "Second Brand" },
+  impressionId: "99999999-8888-4777-8666-555555555555",
+};
+
 const PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const SITE = "https://getsidequest.dev";
@@ -45,6 +51,13 @@ const COMPLETE = {
   reason: "answer",
 } as const;
 
+const RESPONSE_ROW: SessionAppendInput = {
+  message: { type: "assistant", content: [] },
+  door: "response",
+  origin: { kind: "model", model: "claude" },
+  uuid: "msg_1",
+};
+
 type Call = { url: string; method?: string; body?: string; auth?: string };
 
 type WorldOptions = {
@@ -56,6 +69,10 @@ type WorldOptions = {
   adStatus?: number;
   startStatus?: number;
   ad?: typeof AD;
+  inlineAds?: (typeof AD)[];
+  adBody?: string;
+  holdInline?: boolean;
+  failFirstImpression?: boolean;
   bandAds?: (typeof AD)[];
   holdFirstBand?: boolean;
   localCheckout?: boolean;
@@ -78,6 +95,10 @@ function world(
     adStatus = 200,
     startStatus = 201,
     ad = AD,
+    inlineAds = [],
+    adBody,
+    holdInline = false,
+    failFirstImpression = false,
     bandAds = [],
     holdFirstBand = false,
     localCheckout = false,
@@ -89,6 +110,9 @@ function world(
   const calls: Call[] = [];
   let releaseFirstBand = () => {};
   const firstBandGate = new Promise<void>((resolve) => (releaseFirstBand = resolve));
+  let releaseInline = () => {};
+  const inlineGate = new Promise<void>((resolve) => (releaseInline = resolve));
+  let impressionCalls = 0;
   let bandCalls = 0;
   const toasts: string[] = [];
   const statuses: (string | undefined)[] = [];
@@ -122,7 +146,14 @@ function world(
         if (holdFirstBand && bandCalls++ === 0) await firstBandGate;
         return served ? reply(200, JSON.stringify(served)) : reply(204);
       }
-      return reply(adStatus, adStatus === 200 ? JSON.stringify(ad) : "");
+      if (holdInline) await inlineGate;
+      return reply(
+        adStatus,
+        adStatus === 200 ? (adBody ?? JSON.stringify(inlineAds.shift() ?? ad)) : "",
+      );
+    }
+    if (e.url.includes("/api/impression/") && failFirstImpression && impressionCalls++ === 0) {
+      throw new Error("network down");
     }
     return reply(204);
   });
@@ -175,7 +206,7 @@ function world(
     const { Text } = $.ui.resolve(e);
     return <Text>engine row</Text>;
   });
-  return { calls, toasts, statuses, opened, clock, releaseFirstBand };
+  return { calls, toasts, statuses, opened, clock, releaseFirstBand, releaseInline };
 }
 
 const KEY = "sq_connected_key";
@@ -218,10 +249,12 @@ const message = (text: string) => ({
 });
 
 test("requests no ad before the account is connected", async ($, on) => {
-  const { calls } = world(on);
+  const { calls, clock } = world(on);
   await connect($);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
   expect(inlineRequests(calls)).toHaveLength(0);
 });
 
@@ -300,7 +333,9 @@ test("once the site confirms the code, the mod names the account and requests ad
   expect(toasts).toEqual([]);
   await clock.advance(1000);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const created = calls.find((c) => c.method === "POST" && c.url === `${SITE}/api/device`);
   expect(toasts).toEqual(["Sidequest connected as ada@example.com."]);
@@ -312,7 +347,9 @@ test("an expired code ends the poll without connecting", async ($, on) => {
   await connect($);
   await clock.advance(1000);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(toasts).toEqual(["Sidequest: the code expired. Run /sidequest-connect again."]);
   expect(inlineRequests(calls)).toHaveLength(0);
@@ -324,7 +361,9 @@ test("a second /sidequest-connect replaces the first, so only its key is connect
   await connect($);
   await clock.advance(1000);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const created = calls.filter((c) => c.method === "POST" && c.url === `${SITE}/api/device`);
   expect(toasts).toHaveLength(1);
@@ -391,30 +430,38 @@ test("ignores a non-loopback SIDEQUEST_URL from user settings", async ($, on) =>
 });
 
 test("shows the suspended status when the site refuses a banned account", async ($, on) => {
-  const { statuses } = world(on, { ...CONNECTED, adStatus: 403 });
+  const { statuses, clock } = world(on, { ...CONNECTED, adStatus: 403 });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
   expect(statuses).toContain("account suspended");
 });
 
 test("shows a plain status when the site cannot serve ads", async ($, on) => {
-  const { statuses } = world(on, { ...CONNECTED, adStatus: 502 });
+  const { statuses, clock } = world(on, { ...CONNECTED, adStatus: 502 });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
   expect(statuses).toContain("ads unavailable — trying again next prompt");
 });
 
 test("clears the status line when an ad is served", async ($, on) => {
-  const { statuses } = world(on, { ...CONNECTED, adStatus: 200 });
+  const { statuses, clock } = world(on, { ...CONNECTED, adStatus: 200 });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
   expect(statuses).toContain(undefined);
 });
 
 test("sends the question, answer and session id with the device key", async ($, on) => {
-  const { calls } = world(on, CONNECTED);
+  const { calls, clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const request = inlineRequests(calls)[0];
   expect(keyOf(request)).toBe(KEY);
@@ -431,9 +478,11 @@ test("sends the question, answer and session id with the device key", async ($, 
 });
 
 test("marks the plugin version as local when it runs from a local checkout", async ($, on) => {
-  const { calls } = world(on, { ...CONNECTED, localCheckout: true });
+  const { calls, clock } = world(on, { ...CONNECTED, localCheckout: true });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").pluginVersion).toBe(
     `${PLUGIN_VERSION}+local`,
@@ -441,34 +490,40 @@ test("marks the plugin version as local when it runs from a local checkout", asy
 });
 
 test("tells the site the ad request comes from Claude Desktop", async ($, on) => {
-  const { calls } = world(on, {
+  const { calls, clock } = world(on, {
     ...CONNECTED,
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("desktop");
 });
 
 test("an IDE extension request sends its entrypoint as the client", async ($, on) => {
-  const { calls } = world(on, {
+  const { calls, clock } = world(on, {
     ...CONNECTED,
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("claude-vscode");
 });
 
 test("a terminal opened from another terminal sends its own app, not the inherited TERM_PROGRAM", async ($, on) => {
-  const { calls } = world(on, {
+  const { calls, clock } = world(on, {
     ...CONNECTED,
     osEnv: { __CFBundleIdentifier: "net.kovidgoyal.kitty" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").terminalProgram).toBe(
     "net.kovidgoyal.kitty",
@@ -476,18 +531,20 @@ test("a terminal opened from another terminal sends its own app, not the inherit
 });
 
 test("an IDE extension launched from a terminal sends no terminal program", async ($, on) => {
-  const { calls } = world(on, {
+  const { calls, clock } = world(on, {
     ...CONNECTED,
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").terminalProgram).toBeUndefined();
 });
 
 test("a Claude Desktop viewport does not set fullscreen", async ($, on) => {
-  const { calls } = world(on, {
+  const { calls, clock } = world(on, {
     ...CONNECTED,
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
   });
@@ -495,28 +552,34 @@ test("a Claude Desktop viewport does not set fullscreen", async ($, on) => {
   const ui = await $.ui.mount({ ...message(ANSWER), surface: "desktop", viewport });
   await ui.unmount();
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const body = JSON.parse(inlineRequests(calls)[0]?.body ?? "{}");
   expect(body.fullscreen).toBeUndefined();
 });
 
 test("sends whether the terminal renders fullscreen, as the viewport says", async ($, on) => {
-  const { calls } = world(on, CONNECTED);
+  const { calls, clock } = world(on, CONNECTED);
   const viewport = { columns: 120, rows: 40, isFullscreen: true };
   const ui = await $.ui.mount({ ...message(ANSWER), surface: "terminal", viewport });
   await ui.unmount();
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").fullscreen).toBe(true);
 });
 
 for (const surface of ["terminal", "desktop"] as const) {
   test(`shows a labeled ad under the last message of the answer (${surface})`, async ($, on) => {
-    world(on, CONNECTED);
+    const { clock } = world(on, CONNECTED);
     await $.turn.start({ text: QUESTION, turnId: "t1" });
+    await $.session.append(RESPONSE_ROW);
     await $.turn.complete(COMPLETE);
+    await clock.settle();
 
     const ui = await $.ui.mount({ ...message("Prioritize fit and cushioning."), surface });
     expect(await ui.find({ text: /Example Brand/ })).toBeDefined();
@@ -535,7 +598,9 @@ for (const surface of ["terminal", "desktop"] as const) {
 test("clicking the call to action in the fullscreen terminal opens the ad link", async ($, on) => {
   const { clock, opened } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const ui = await $.ui.mount({
     ...message("Prioritize fit and cushioning."),
@@ -552,7 +617,9 @@ test("clicking the call to action in the fullscreen terminal opens the ad link",
 test("pressing the button in the IDE panel opens the ad link", async ($, on) => {
   const { clock, opened } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const ui = await $.ui.mount({ ...message("Prioritize fit and cushioning."), surface: "vscode" });
   await ui.press({ key: "cta" });
@@ -563,9 +630,11 @@ test("pressing the button in the IDE panel opens the ad link", async ($, on) => 
 });
 
 test("draws the engine's own reply above the ad", async ($, on) => {
-  world(on, CONNECTED);
+  const { clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const ui = await $.ui.mount({ ...message("Prioritize fit and cushioning."), surface: "desktop" });
   expect(await ui.find({ text: /engine row/ })).toBeDefined();
@@ -575,7 +644,9 @@ test("draws the engine's own reply above the ad", async ($, on) => {
 test("reports an impression once even when the ad renders twice", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const first = await $.ui.mount({
     ...message("Prioritize fit and cushioning."),
@@ -598,7 +669,9 @@ test("reports an impression once even when the ad renders twice", async ($, on) 
 test("renders no ad and reports no impression for an ad without a valid impressionId", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, ad: { ...AD, impressionId: "../../evil" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   const ui = await $.ui.mount({
     ...message("Prioritize fit and cushioning."),
@@ -611,20 +684,76 @@ test("renders no ad and reports no impression for an ad without a valid impressi
 });
 
 test("leaves the earlier messages of the answer alone", async ($, on) => {
-  world(on, CONNECTED);
+  const { clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
-  const ui = await $.ui.mount({ ...message("Look at fit first."), surface: "desktop" });
+  const ui = await $.ui.mount({
+    ...message("Look at fit first."),
+    requestId: "msg_0",
+    surface: "desktop",
+  });
   expect(await ui.find({ text: /engine row/ })).toBeDefined();
   expect(await ui.find({ text: /Sponsored/ })).toBeUndefined();
 });
 
 test("requests nothing when the question is blank", async ($, on) => {
-  const { calls } = world(on, CONNECTED);
+  const { calls, clock } = world(on, CONNECTED);
   await $.turn.start({ text: "  ", turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
   expect(inlineRequests(calls)).toHaveLength(0);
+});
+
+test("the ad request carries the question of its own turn when a prompt starts the next turn first", async ($, on) => {
+  const { calls, clock } = world(on, CONNECTED);
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.turn.start({ text: "A second question", turnId: "t2" });
+  await $.session.append(RESPONSE_ROW);
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").question).toBe(QUESTION);
+});
+
+test("a bad ad response leaves no ad and no unhandled error", async ($, on) => {
+  const { clock } = world(on, { ...CONNECTED, adBody: "<html>not json</html>" });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  const ui = await $.ui.mount({ ...message(ANSWER), surface: "desktop" });
+  expect(await ui.find({ text: /Sponsored/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("an ad request that is still open does not hold up the end of the turn", async ($, on) => {
+  const { releaseInline } = world(on, { ...CONNECTED, holdInline: true });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
+
+  await expect($.turn.complete(COMPLETE)).resolves.toBeDefined();
+  releaseInline();
+});
+
+test("two answers with the same text each show their own ad", async ($, on) => {
+  const { clock } = world(on, { ...CONNECTED, inlineAds: [AD, SECOND_AD] });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+  await $.turn.start({ text: QUESTION, turnId: "t2" });
+  await $.session.append({ ...RESPONSE_ROW, uuid: "msg_2" });
+  await $.turn.complete({ ...COMPLETE, turnId: "t2" });
+  await clock.settle();
+
+  const ui = await $.ui.mount({ ...message(ANSWER), requestId: "msg_2", surface: "desktop" });
+  expect(await ui.find({ text: /Second Brand/ })).toBeDefined();
+  await ui.unmount();
 });
 
 const band = (isWorking: boolean, hasSurvey = false, bodyColumns = 80) => ({
@@ -643,6 +772,19 @@ const band = (isWorking: boolean, hasSurvey = false, bodyColumns = 80) => ({
 // Band ad tests run only while band ads are on; the tests after them cover the off state.
 const bandTest: typeof test = BAND_ADS ? test : () => {};
 const bandOffTest: typeof test = BAND_ADS ? () => {} : test;
+
+test("a network error on the impression request is retried", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, failFirstImpression: true });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+  const ui = await $.ui.mount({ ...message(ANSWER), surface: "desktop" });
+  await clock.advance(1000);
+  await ui.unmount();
+
+  expect(calls.filter((c) => c.url === IMPRESSION_URL)).toHaveLength(2);
+});
 
 bandTest("the band labels the ad with a dim Ad and not the word Sponsored", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
@@ -761,6 +903,7 @@ bandTest("a band ad that arrives after /sidequest band off is not shown", async 
 bandTest("the band ad stays after the turn completes", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -858,6 +1001,7 @@ test("a turn a background task starts sends no ad request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: NOTIFICATION, wait: false, origin: { kind: "task-notification" } });
   await $.turn.start({ text: NOTIFICATION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -868,9 +1012,11 @@ test("after a background task's turn, the next typed prompt gets an inline ad fo
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: NOTIFICATION, wait: false, origin: { kind: "task-notification" } });
   await $.turn.start({ text: NOTIFICATION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
   await $.turn.start({ text: QUESTION, turnId: "t2" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete({ ...COMPLETE, turnId: "t2" });
   await clock.settle();
 
@@ -881,6 +1027,7 @@ test("a claude -p run sends no ad request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "sdk" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -891,19 +1038,19 @@ test("a prompt sent through Remote Control sends no ad request", async ($, on) =
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "bridge" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
   expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
 });
 
-bandTest("a turn with no text asks for a band ad with the earlier question", async ($, on) => {
+bandTest("a turn with no text sends no band request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD, NEXT_BAND_AD] });
-  await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.turn.start({ text: "", turnId: "t2" });
+  await $.turn.start({ text: "", turnId: "t1" });
   await clock.settle();
 
-  expect(JSON.parse(bandRequests(calls)[1]?.body ?? "{}").question).toBe(QUESTION);
+  expect(bandRequests(calls)).toHaveLength(0);
 });
 
 bandTest("a band request carries the question and no answer", async ($, on) => {
@@ -948,6 +1095,7 @@ const USAGE = "Usage: /sidequest on | off | inline on | inline off | band on | b
 bandTest("both ad placements are on by default", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -964,10 +1112,12 @@ bandTest("/sidequest band off sends no band request on the next turn", async ($,
 });
 
 bandTest("/sidequest band off still requests inline ads", async ($, on) => {
-  const { calls } = world(on, CONNECTED);
+  const { calls, clock } = world(on, CONNECTED);
   await sidequest($, "band off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(inlineRequests(calls)).toHaveLength(1);
 });
@@ -984,10 +1134,12 @@ bandTest("/sidequest band off hides the band that is showing", async ($, on) => 
 });
 
 bandTest("/sidequest inline off sends no inline request", async ($, on) => {
-  const { calls } = world(on, CONNECTED);
+  const { calls, clock } = world(on, CONNECTED);
   await sidequest($, "inline off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(inlineRequests(calls)).toHaveLength(0);
 });
@@ -1002,9 +1154,11 @@ bandTest("/sidequest inline off still requests band ads", async ($, on) => {
 });
 
 bandTest("/sidequest inline off hides the inline ad that is showing", async ($, on) => {
-  world(on, CONNECTED);
+  const { clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
   await sidequest($, "inline off");
 
   const ui = await $.ui.mount({ ...message("Prioritize fit and cushioning."), surface: "desktop" });
@@ -1016,6 +1170,7 @@ bandTest("/sidequest off sends no ad request of either kind", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await sidequest($, "off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1027,6 +1182,7 @@ bandTest("/sidequest on turns both placements back on", async ($, on) => {
   await sidequest($, "off");
   await sidequest($, "on");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1072,6 +1228,7 @@ for (const args of ["maybe", "band", "band maybe", "sidebar on", "on off", "band
 bandOffTest("with band ads off, a turn sends only the inline request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1079,10 +1236,12 @@ bandOffTest("with band ads off, a turn sends only the inline request", async ($,
 });
 
 bandOffTest("with band ads off, /sidequest off sends no ad request", async ($, on) => {
-  const { calls } = world(on, CONNECTED);
+  const { calls, clock } = world(on, CONNECTED);
   await sidequest($, "off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
+  await clock.settle();
 
   expect(inlineRequests(calls)).toHaveLength(0);
 });
@@ -1090,12 +1249,14 @@ bandOffTest("with band ads off, /sidequest off sends no ad request", async ($, o
 bandOffTest(
   "with band ads off, a saved inline off still applies in a new session",
   async ($, on) => {
-    const { calls } = world(on, {
+    const { calls, clock } = world(on, {
       store: { deviceKey: KEY, settings: { inline: false, band: true } },
     });
     await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
     await $.turn.start({ text: QUESTION, turnId: "t1" });
+    await $.session.append(RESPONSE_ROW);
     await $.turn.complete(COMPLETE);
+    await clock.settle();
 
     expect(inlineRequests(calls)).toHaveLength(0);
   },
