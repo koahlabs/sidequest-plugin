@@ -48,11 +48,11 @@ let fullscreen: boolean | undefined;
 let imagesDraw: boolean | undefined;
 let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
-let question = "";
 // Ads follow prompts typed in the terminal or Claude Desktop (both "composer"), not turns that
-// background tasks, schedules, peers, Remote Control or `claude -p` start.
+// background tasks, schedules, peers, Remote Control or `claude -p` start. Only those turns are here.
+const questions = new Map<string, string>();
 let nextTurnFromPerson = true;
-let otherTurnId: string | undefined;
+let answerRowId: string | undefined;
 let bandTurnId: string | undefined;
 let bandColumns: number | undefined;
 
@@ -334,13 +334,12 @@ async function reportImpression(
   const url = `${base}/api/impression/${impressionId}`;
   for (const wait of [0, 1000, 4000, 15000]) {
     if (wait) await $.clock.sleep(wait);
-    const res = await $.http.fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    if (res.ok) return;
-    // Permanent errors stop; 429 and 5xx back off and reuse the same URL.
-    if (res.status !== 429 && res.status < 500) return;
+    const res = await $.http
+      .fetch(url, { method: "POST", headers: { Authorization: `Bearer ${key}` } })
+      .catch(() => undefined);
+    if (res?.ok) return;
+    // Permanent errors stop; a network error, 429 and 5xx back off and reuse the same URL.
+    if (res && res.status !== 429 && res.status < 500) return;
   }
 }
 
@@ -370,6 +369,7 @@ async function requestAd(
   $: EngineInterface,
   key: string,
   placement: "inline" | "band",
+  question: string,
   answer?: string,
 ): Promise<KoahAd | undefined> {
   const res = await $.http.fetch(`${await site($)}/api/ad`, {
@@ -412,11 +412,11 @@ async function reportOnScreen($: EngineInterface, ad: KoahAd) {
   if (key) void reportImpression($, await site($), ad.impressionId, key);
 }
 
-async function refreshBand($: EngineInterface, turnId: string) {
+async function refreshBand($: EngineInterface, turnId: string, question: string) {
   const key = await storedDeviceKey($);
   if (!key || !question.trim() || !(await readSettings($)).band) return;
   try {
-    const ad = await requestAd($, key, "band");
+    const ad = await requestAd($, key, "band", question);
     if (ad && bandTurnId === turnId && (await readSettings($)).band) {
       await update($, band, () => ad);
     }
@@ -501,6 +501,8 @@ export const register: Register = (on) => {
   imagesProbe = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
+  answerRowId = undefined;
+  questions.clear();
 
   on("session.start", async ($, e, next) => {
     await $.command.register({
@@ -594,29 +596,41 @@ export const register: Register = (on) => {
     if (e.agentId !== undefined) return next(e);
     const fromPerson = nextTurnFromPerson;
     nextTurnFromPerson = true;
-    if (!fromPerson) otherTurnId = e.turnId;
-    else {
-      if (e.text.trim()) question = e.text;
+    if (fromPerson) {
+      questions.set(e.turnId, e.text);
       bandTurnId = e.turnId;
       // The band and inline requests each use one of the site's daily ad requests.
-      void refreshBand($, e.turnId);
+      void refreshBand($, e.turnId, e.text);
     }
     return next(e);
   });
 
+  // The last response row of the main loop is the message the ad goes under.
+  on("session.append", { door: "response" }, async ($, e, next) => {
+    if (e.agentId === undefined) answerRowId = e.uuid;
+    return next(e);
+  });
+
   on("turn.complete", async ($, e, next) => {
+    // Read before any await: a prompt typed during the answer starts the next turn.
+    const question = questions.get(e.turnId);
+    const messageId = answerRowId;
+    questions.delete(e.turnId);
     const result = await next(e);
-    if (e.agentId !== undefined || e.turnId === otherTurnId) return result;
+    if (e.agentId !== undefined || !question?.trim() || messageId === undefined) return result;
     if (e.reason !== "answer" || !e.answer.trim()) return result;
     if (!(await readSettings($)).inline) return result;
     const key = await storedDeviceKey($);
-    if (!key || !question.trim()) return result;
+    if (!key) return result;
 
-    const served = await requestAd($, key, "inline", e.answer);
-    if (served) {
-      const slot: AdSlot = { answer: e.answer.trim(), ad: served };
-      await update($, slots, (list) => [...(list ?? []), slot].slice(-MAX_SLOTS));
-    }
+    // In the background: a slow or failing ad request must not hold up the end of the turn.
+    void requestAd($, key, "inline", question, e.answer)
+      .then(async (ad) => {
+        if (!ad) return;
+        const slot: AdSlot = { messageId, ad };
+        await update($, slots, (list) => [...(list ?? []), slot].slice(-MAX_SLOTS));
+      })
+      .catch(() => {});
     return result;
   });
 
@@ -624,9 +638,8 @@ export const register: Register = (on) => {
   on("ui.render", { component: "AssistantMessage" }, async ($, e, next) => {
     if (e.surface === "terminal") fullscreen = e.viewport?.isFullscreen ?? fullscreen;
     if (!(await readSettings($)).inline) return next(e);
-    const text = e.props.text.trim();
     const list = await read($, slots);
-    const slot = text === "" ? undefined : list.find((s) => s.answer.endsWith(text));
+    const slot = list.find((s) => s.messageId === e.requestId);
     if (slot === undefined || !isAd(slot.ad)) return next(e);
 
     const { ad } = slot;
