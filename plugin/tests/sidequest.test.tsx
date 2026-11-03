@@ -37,6 +37,8 @@ const SECOND_AD = {
 const PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const SITE = "https://getsidequest.dev";
+const LATEST_MANIFEST_URL =
+  "https://raw.githubusercontent.com/koahlabs/sidequest-plugin/main/plugin/.claude-plugin/plugin.json";
 const PLUGIN_VERSION = "1.2.3";
 const CLAUDE_VERSION = "2.1.300";
 const TERM_PROGRAM = "ghostty";
@@ -79,6 +81,9 @@ type WorldOptions = {
   failingCommands?: string[];
   osEnv?: Record<string, string>;
   unameOutput?: string;
+  surfaces?: ("terminal" | "desktop" | "mobile" | "vscode")[];
+  latestVersion?: string;
+  deviceBody?: Record<string, unknown>;
 };
 
 // The world beneath the mod: the site proxy, the icon fetch, and an engine
@@ -105,6 +110,9 @@ function world(
     failingCommands = [],
     osEnv = {},
     unameOutput = "Darwin\n",
+    surfaces = ["terminal"],
+    latestVersion,
+    deviceBody = { email: "ada@example.com" },
   }: WorldOptions = {},
 ) {
   const calls: Call[] = [];
@@ -118,12 +126,18 @@ function world(
   const statuses: (string | undefined)[] = [];
   const opened: (readonly string[])[] = [];
   const answers: Record<number, string> = {
-    200: JSON.stringify({ email: "ada@example.com" }),
+    200: JSON.stringify(deviceBody),
     202: "{}",
     404: "{}",
   };
 
   on("http.fetch", async (_$, e) => {
+    if (e.url === LATEST_MANIFEST_URL) {
+      const text = latestVersion ? JSON.stringify({ version: latestVersion }) : "";
+      return {
+        value: { status: latestVersion ? 200 : 404, ok: !!latestVersion, headers: {}, text },
+      };
+    }
     const method = e.init?.method ?? "GET";
     calls.push({ url: e.url, method, body: e.init?.body, auth: e.init?.headers?.Authorization });
     const reply = (status: number, text = "") => ({
@@ -198,6 +212,7 @@ function world(
   });
   const clock = mock.clock(on);
   on("session.id", async () => ({ value: "session_abc" }));
+  on("session.surfaces", async () => ({ value: surfaces }));
   on("prompt.submit", async (_$, e) => ({ text: e.text }));
   on("turn.start", async (_$, e) => ({ turnId: e.turnId }));
   on("turn.complete", async (_$, e) => ({ text: e.answer }));
@@ -251,6 +266,15 @@ const message = (text: string) => ({
 test("requests no ad before the account is connected", async ($, on) => {
   const { calls, clock } = world(on);
   await connect($);
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.session.append(RESPONSE_ROW);
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+  expect(inlineRequests(calls)).toHaveLength(0);
+});
+
+test("requests no ad when no surface can draw it", async ($, on) => {
+  const { calls, clock } = world(on, { ...CONNECTED, surfaces: [] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.session.append(RESPONSE_ROW);
   await $.turn.complete(COMPLETE);
@@ -400,6 +424,105 @@ test("a session with no key reminds the user to run /sidequest-connect", async (
 
   expect(calls).toHaveLength(0);
   expect(toasts).toEqual(["sidequest: run /sidequest-connect to link your account"]);
+});
+
+test("/sidequest in a cloud session starts with why no ads show", async ($, on) => {
+  world(on, { ...CONNECTED, osEnv: { CLAUDE_CODE_REMOTE: "true" } });
+
+  const text = await sidequest($, "");
+  expect(text.split("\n")[0]).toBe(
+    "Ads don't show in cloud sessions. Run Claude Code on your computer (terminal, Claude Desktop, or VS Code) to see ads and earn.",
+  );
+});
+
+test("/sidequest shows the balance without the threshold once it is over it", async ($, on) => {
+  world(on, {
+    ...CONNECTED,
+    polls: [200],
+    deviceBody: {
+      email: "ada@example.com",
+      balanceCents: 1240,
+      payoutThresholdCents: 1000,
+    },
+  });
+
+  expect(await sidequest($, "")).toContain("Next payout: $12.40 so far.\n");
+});
+
+test("/sidequest shows the payout threshold while the balance is under it", async ($, on) => {
+  world(on, {
+    ...CONNECTED,
+    polls: [200],
+    deviceBody: {
+      email: "ada@example.com",
+      balanceCents: 410,
+      payoutThresholdCents: 1000,
+    },
+  });
+
+  expect(await sidequest($, "")).toContain(
+    "Next payout: $4.10 so far. Payouts start above $10.00.",
+  );
+});
+
+test("/sidequest shows no payout line when the site sends no earnings", async ($, on) => {
+  world(on, { ...CONNECTED, polls: [200] });
+
+  expect(await sidequest($, "")).not.toContain("Next payout");
+});
+
+test("/sidequest links to the earnings page before the account is connected", async ($, on) => {
+  world(on);
+
+  expect(await sidequest($, "")).toContain(`See your earnings: ${SITE}/account`);
+});
+
+test("a newer version on GitHub is announced at session start", async ($, on) => {
+  const { toasts, clock } = world(on, { ...CONNECTED, latestVersion: "1.10.0" });
+  await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
+  await clock.settle();
+
+  expect(toasts).toEqual(["Sidequest 1.10.0 is ready. Run /sidequest update."]);
+});
+
+test("/sidequest names a newer version", async ($, on) => {
+  world(on, { ...CONNECTED, latestVersion: "1.10.0" });
+
+  expect(await sidequest($, "")).toContain(
+    "A new version (1.10.0) is ready. Run /sidequest update to get it.",
+  );
+});
+
+test("a local checkout behind GitHub is told about the newer version", async ($, on) => {
+  const { toasts, clock } = world(on, {
+    ...CONNECTED,
+    latestVersion: "1.2.4",
+    localCheckout: true,
+  });
+  await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
+  await clock.settle();
+
+  expect(toasts).toEqual(["Sidequest 1.2.4 is ready. Run /sidequest update."]);
+});
+
+test("/sidequest update updates the marketplace and then the plugin", async ($, on) => {
+  const { opened } = world(on, { ...CONNECTED, osEnv: { CLAUDE_CODE_EXECPATH: "/opt/claude" } });
+
+  expect(await sidequest($, "update")).toBe(
+    "Sidequest is updated. Run /reload-plugins to start using it.",
+  );
+  expect(opened.filter((argv) => argv[0] === "/opt/claude")).toEqual([
+    ["/opt/claude", "plugin", "marketplace", "update", "sidequest"],
+    ["/opt/claude", "plugin", "update", "sidequest@sidequest"],
+  ]);
+});
+
+test("/sidequest update that fails shows the command to run in a terminal", async ($, on) => {
+  world(on, { ...CONNECTED, failingCommands: ["claude"] });
+
+  expect(await sidequest($, "update")).toBe(
+    "Sidequest could not update. Run these in your terminal, then run /reload-plugins:\n```\nclaude plugin marketplace update sidequest\nclaude plugin update sidequest@sidequest\n```",
+  );
 });
 
 test("ignores a SIDEQUEST_URL set only in project settings", async ($, on) => {
@@ -1090,7 +1213,7 @@ for (const { columns, textLength } of BAND_WIDTHS) {
   );
 }
 
-const USAGE = "Usage: /sidequest on | off | inline on | inline off | band on | band off";
+const USAGE = "Usage: /sidequest on | off | inline on | inline off | band on | band off | update";
 
 bandTest("both ad placements are on by default", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
@@ -1267,13 +1390,13 @@ bandOffTest("with band ads off, /sidequest shows only on and off", async ($, on)
 
   const text = await sidequest($, "");
   expect(text.startsWith("Ads: on.\n")).toBe(true);
-  expect(text.endsWith("\nUsage: /sidequest on | off")).toBe(true);
+  expect(text.endsWith("\nUsage: /sidequest on | off | update")).toBe(true);
 });
 
 for (const args of ["band on", "band off", "inline off"]) {
   bandOffTest(`with band ads off, /sidequest ${args} prints the usage`, async ($, on) => {
     world(on, CONNECTED);
 
-    expect(await sidequest($, args)).toBe("Usage: /sidequest on | off");
+    expect(await sidequest($, args)).toBe("Usage: /sidequest on | off | update");
   });
 }

@@ -61,11 +61,12 @@ Open [getsidequest.dev/account](https://getsidequest.dev/account) and sign in. T
 | ----------------------- | -------------------------------------------- |
 | Show whether ads are on | `/sidequest`                                 |
 | Turn ads on or off      | `/sidequest on` or `/sidequest off`          |
+| Update the plugin       | `/sidequest update`, then `/reload-plugins`  |
 | Count an impression     | Automatic, once per ad, when the ad is drawn |
 
 ## What it sends
 
-Each request goes to getsidequest.dev. It carries the last question and answer (up to 4,000 characters each), the session ID, and a random per-machine device key. The site forwards the request to Koah with your account. The mod does no IP lookup: the site sees your IP as any web request does. It never sends an email address or phone number.
+Each request goes to getsidequest.dev. It carries the last question and answer (up to 4,000 characters each), the session ID, and a random per-machine device key. The site forwards the request to Koah with your account. The mod does no IP lookup: the site sees your IP as any web request does. It never sends an email address or phone number. The plugin also reads its latest version number from GitHub (raw.githubusercontent.com) and sends nothing there.
 
 ## Requirements
 
@@ -76,6 +77,7 @@ Each request goes to getsidequest.dev. It carries the last question and answer (
 ## Troubleshooting
 
 - **No ad appears.** Some requests return no ad. Ask another question.
+- **No ad appears in a Claude Code session on the web.** Ads do not show in cloud sessions. Run Claude Code on your computer, in the terminal, Claude Desktop, or VS Code.
 - **Claude asks you to run `/sidequest-connect`, or the status line shows `sidequest: not connected`.** Run `/sidequest-connect`.
 - **The plugin does not load.** Start a new session, or run `/reload-plugins`.
 - **`claude: command not found`.** Install the CLI with the [official setup guide](https://code.claude.com/docs/en/setup).
