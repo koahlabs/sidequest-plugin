@@ -8,7 +8,11 @@ const MAX_TEXT = 4000;
 const MAX_SLOTS = 50;
 const SITE = "https://getsidequest.dev";
 const POLL_MS = 1000;
+const LATEST_MANIFEST_URL =
+  "https://raw.githubusercontent.com/koahlabs/sidequest-plugin/main/plugin/.claude-plugin/plugin.json";
+const UPDATE_TIMEOUT_MS = 120_000;
 const NEVER_ENTER = "Only enter a code that Claude showed you.";
+const NOT_CONNECTED = "not connected — run /sidequest-connect";
 const connectUrl = (base: string, userCode: string) => `${base}/connect?code=${userCode}`;
 const codeNotice = (base: string, userCode: string) =>
   `copy ${connectUrl(base, userCode)} into your browser. ${NEVER_ENTER}`;
@@ -19,8 +23,8 @@ const band = atom({ plugin: "sidequest", key: "band" } as const, null as KoahAd 
 type Settings = { inline: boolean; band: boolean };
 
 const USAGE = BAND_ADS
-  ? "Usage: /sidequest on | off | inline on | inline off | band on | band off"
-  : "Usage: /sidequest on | off";
+  ? "Usage: /sidequest on | off | inline on | inline off | band on | band off | update"
+  : "Usage: /sidequest on | off | update";
 
 const COMMANDS = new Map<string, Partial<Settings>>([
   ["on", { inline: true, band: BAND_ADS }],
@@ -42,6 +46,7 @@ let osOnce: Promise<Os | undefined> | undefined;
 let clientOnce: Promise<string | undefined> | undefined;
 let pluginVersionOnce: Promise<string | undefined> | undefined;
 let claudeVersionOnce: Promise<string | undefined> | undefined;
+let newerVersionOnce: Promise<string | undefined> | undefined;
 let terminalProgramOnce: Promise<string | undefined> | undefined;
 let fullscreen: boolean | undefined;
 // Whether this terminal draws an Image's pixels; unknown until a blit answers.
@@ -128,27 +133,131 @@ async function openBrowser($: EngineInterface, url: string, os: Os | undefined) 
 
 const joined = (...parts: (string | false | undefined)[]) => parts.filter(Boolean).join(" · ");
 
+const versionParts = (version: string) => version.split(".").map(Number);
+
+// The version on GitHub's main branch when it is strictly newer than the installed one; any failure
+// is no notice. A local checkout gets none, as on the site: an update does not change it.
+function newerVersion($: EngineInterface): Promise<string | undefined> {
+  return (newerVersionOnce ??= Promise.all([pluginVersion($), $.http.fetch(LATEST_MANIFEST_URL)])
+    .then(([installed, res]) => {
+      const { version } = JSON.parse(res.text) as { version: string };
+      if (!installed || installed.includes("+") || !/^\d+\.\d+\.\d+$/.test(version))
+        return undefined;
+      const [latest, current] = [versionParts(version), versionParts(installed)];
+      const index = latest.findIndex((part, i) => part !== current[i]);
+      return index >= 0 && latest[index]! > current[index]! ? version : undefined;
+    })
+    .catch(() => undefined));
+}
+
+const updateNotice = (version: string) => `Sidequest ${version} is ready. Run /sidequest update.`;
+
+const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+type Payout = { balanceCents: number; thresholdCents: number; payable: boolean };
+type DeviceStatus =
+  | { kind: "connected"; email: string; payout?: Payout }
+  | { kind: "pending" | "suspended" | "not_found" | "unavailable" };
+
+const DEVICE_STATES = { 202: "pending", 403: "suspended", 404: "not_found" } as const;
+
+const isPayout = (payout: Partial<Payout> | null | undefined): payout is Payout =>
+  typeof payout?.balanceCents === "number" &&
+  typeof payout.thresholdCents === "number" &&
+  typeof payout.payable === "boolean";
+
+// The site sends the payout only when it can read earnings, and decides itself whether it is payable.
+async function deviceStatus($: EngineInterface, base: string, key: string): Promise<DeviceStatus> {
+  const res = await $.http
+    .fetch(`${base}/api/device`, { headers: { Authorization: `Bearer ${key}` } })
+    .catch(() => undefined);
+  const state = DEVICE_STATES[res?.status as keyof typeof DEVICE_STATES];
+  if (state) return { kind: state };
+  if (res?.status !== 200) return { kind: "unavailable" };
+  try {
+    const { email, payout } = JSON.parse(res.text) as {
+      email?: unknown;
+      payout?: Partial<Payout> | null;
+    };
+    if (typeof email !== "string") return { kind: "unavailable" };
+    return { kind: "connected", email, ...(isPayout(payout) && { payout }) };
+  } catch {
+    return { kind: "unavailable" };
+  }
+}
+
+const ACCOUNT_TEXT: Record<DeviceStatus["kind"], string> = {
+  connected: "connected",
+  suspended: "suspended",
+  not_found: NOT_CONNECTED,
+  pending: "waiting for you to finish connecting",
+  unavailable: "could not reach Sidequest",
+};
+
+const payoutLine = ({ balanceCents, thresholdCents, payable }: Payout) =>
+  payable
+    ? `Balance: ${dollars(balanceCents)}. You get paid after the month ends, once Stripe is connected.`
+    : `Balance: ${dollars(balanceCents)}. You get paid when your balance is more than ${dollars(thresholdCents)}.`;
+
+const MARKETPLACE_UPDATE = ["plugin", "marketplace", "update", "sidequest"];
+const PLUGIN_UPDATE = ["plugin", "update", "sidequest@sidequest"];
+
+// The outcome and versions come from `plugin update --json`; any failure shows the commands to run by hand.
+async function updateReply($: EngineInterface): Promise<string> {
+  const claude = (await $.env.get("CLAUDE_CODE_EXECPATH")) ?? "claude";
+  const run = (args: string[]) =>
+    $.process.run([claude, ...args], { timeoutMs: UPDATE_TIMEOUT_MS });
+  try {
+    if ((await run(MARKETPLACE_UPDATE)).exitCode === 0) {
+      const { exitCode, stdout } = await run([...PLUGIN_UPDATE, "--json"]);
+      const { updateOutcome, oldVersion, newVersion } = JSON.parse(stdout) as Record<
+        string,
+        string | undefined
+      >;
+      if (exitCode === 0 && updateOutcome === "up_to_date") {
+        return `Sidequest is already on the latest version (${newVersion}).`;
+      }
+      if (exitCode === 0 && updateOutcome === "updated" && newVersion) {
+        const updated = oldVersion
+          ? `Sidequest updated from ${oldVersion} to ${newVersion}.`
+          : `Sidequest updated to ${newVersion}.`;
+        return `${updated} Run /reload-plugins to start using it.`;
+      }
+    }
+  } catch {}
+  const commands = [MARKETPLACE_UPDATE, PLUGIN_UPDATE].map((args) => `claude ${args.join(" ")}`);
+  return `Sidequest could not update. Check your internet connection and run /sidequest update again. If it still fails, run these in a terminal, then run /reload-plugins:\n\`\`\`\n${commands.join("\n")}\n\`\`\``;
+}
+
 async function statusLines($: EngineInterface, current: Settings) {
-  const device = await deviceMetadata($);
-  const os = await currentOs($);
   const base = await site($);
+  const key = await storedDeviceKey($);
+  const [device, os, newer, surfaces, connection] = await Promise.all([
+    deviceMetadata($),
+    currentOs($),
+    newerVersion($),
+    $.session.surfaces(),
+    key ? deviceStatus($, base, key) : undefined,
+  ]);
   const app = joined(
     device.client,
     device.terminalProgram,
     device.fullscreen !== undefined && (device.fullscreen ? "fullscreen" : "not fullscreen"),
   );
-  const account = (await storedDeviceKey($))
-    ? "connected"
-    : "not connected — run /sidequest-connect";
+  const account = connection ? ACCOUNT_TEXT[connection.kind] : NOT_CONNECTED;
   return [
-    settingsText(current),
+    surfaces.length > 0
+      ? settingsText(current)
+      : "Ads do not show in Claude Code on the web. To see ads and earn, run Claude Code on your computer: in the terminal, Claude Desktop, or VS Code.",
     joined(
       device.pluginVersion && `Sidequest v${device.pluginVersion}`,
       device.claudeVersion && `Claude Code ${device.claudeVersion}`,
     ),
     app && `App: ${app}`,
     joined(os && `OS: ${os}`, `Account: ${account}`),
-    base !== SITE && `Site: ${base}`,
+    newer && updateNotice(newer),
+    connection?.kind === "connected" && connection.payout && payoutLine(connection.payout),
+    key && `See your earnings: ${base}/account`,
   ].filter(Boolean);
 }
 
@@ -248,17 +357,14 @@ async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: 
 
   while ((await $.clock.now()) < expiresAt) {
     await $.clock.sleep(POLL_MS);
-    const res = await $.http
-      .fetch(`${base}/api/device`, { headers: { Authorization: `Bearer ${key}` } })
-      .catch(() => undefined);
+    const status = await deviceStatus($, base, key);
     if (!(await stillPending())) return;
-    if (res?.status === 200) {
-      const { email } = JSON.parse(res.text) as { email: string };
+    if (status.kind === "connected") {
       await $.store.set("deviceKey", key);
-      return finish(`Sidequest connected as ${email}.`);
+      return finish(`Sidequest connected as ${status.email}.`);
     }
-    if (res?.status === 403) return finish("Sidequest: this account is suspended.");
-    if (res?.status === 404) break;
+    if (status.kind === "suspended") return finish("Sidequest: this account is suspended.");
+    if (status.kind === "not_found") break;
   }
   if (await stillPending()) {
     await finish("Sidequest: the code expired. Run /sidequest-connect again.");
@@ -372,6 +478,8 @@ async function requestAd(
   question: string,
   answer?: string,
 ): Promise<KoahAd | undefined> {
+  // A cloud session seen from the web, or a -p run, has no surface to draw the ad.
+  if (!(await $.session.surfaces()).length) return undefined;
   const res = await $.http.fetch(`${await site($)}/api/ad`, {
     method: "POST",
     headers: {
@@ -396,7 +504,7 @@ async function requestAd(
     return served;
   }
   if (res.status === 401) {
-    $.ui.status("not connected — run /sidequest-connect");
+    $.ui.status(NOT_CONNECTED);
   } else if (res.status === 403) {
     $.ui.status("account suspended");
   } else if (res.status !== 204) {
@@ -495,6 +603,7 @@ export const register: Register = (on) => {
   clientOnce = undefined;
   pluginVersionOnce = undefined;
   claudeVersionOnce = undefined;
+  newerVersionOnce = undefined;
   terminalProgramOnce = undefined;
   fullscreen = undefined;
   imagesDraw = undefined;
@@ -520,6 +629,11 @@ export const register: Register = (on) => {
     else if (!(await storedDeviceKey($))) {
       $.ui.toast("sidequest: run /sidequest-connect to link your account");
     }
+    if (e.isInteractive) {
+      void newerVersion($).then((version) => {
+        if (version) $.ui.toast(updateNotice(version));
+      });
+    }
     return next(e);
   });
 
@@ -533,6 +647,9 @@ export const register: Register = (on) => {
       context: ["The user ran /sidequest. Its output is for them only. Do not mention it."],
     });
     if (!args) return reply(`${(await statusLines($, current)).join("\n")}\n${USAGE}`);
+    if (args === "update") {
+      return reply(await updateReply($));
+    }
     if (!change) return reply(USAGE);
 
     const next = { ...current, ...change };
