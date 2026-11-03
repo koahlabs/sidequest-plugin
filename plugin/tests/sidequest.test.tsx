@@ -1,5 +1,5 @@
 import { expect, mock, test } from "claude-code/testing";
-import type { On, SessionAppendInput } from "claude-code";
+import type { On } from "claude-code";
 
 import { BAND_ADS } from "../hooks/features";
 
@@ -52,13 +52,6 @@ const COMPLETE = {
   turnId: "t1",
   reason: "answer",
 } as const;
-
-const RESPONSE_ROW: SessionAppendInput = {
-  message: { type: "assistant", content: [] },
-  door: "response",
-  origin: { kind: "model", model: "claude" },
-  uuid: "msg_1",
-};
 
 type Call = { url: string; method?: string; body?: string; auth?: string };
 
@@ -268,11 +261,16 @@ const message = (text: string) => ({
   requestId: "msg_1",
 });
 
+async function drawReply($: Engine, requestId = "msg_1") {
+  const ui = await $.ui.mount({ ...message(ANSWER), requestId, surface: "terminal" });
+  await ui.unmount();
+}
+
 test("requests no ad before the account is connected", async ($, on) => {
   const { calls, clock } = world(on);
   await connect($);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   expect(inlineRequests(calls)).toHaveLength(0);
@@ -281,7 +279,7 @@ test("requests no ad before the account is connected", async ($, on) => {
 test("requests no ad when no surface can draw it", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, surfaces: [] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   expect(inlineRequests(calls)).toHaveLength(0);
@@ -362,7 +360,7 @@ test("once the site confirms the code, the mod names the account and requests ad
   expect(toasts).toEqual([]);
   await clock.advance(1000);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -376,7 +374,7 @@ test("an expired code ends the poll without connecting", async ($, on) => {
   await connect($);
   await clock.advance(1000);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -390,7 +388,7 @@ test("a second /sidequest-connect replaces the first, so only its key is connect
   await connect($);
   await clock.advance(1000);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -628,7 +626,7 @@ test("ignores a non-loopback SIDEQUEST_URL from user settings", async ($, on) =>
 test("shows the suspended status when the site refuses a banned account", async ($, on) => {
   const { statuses, clock } = world(on, { ...CONNECTED, adStatus: 403 });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   expect(statuses).toContain("account suspended");
@@ -637,7 +635,7 @@ test("shows the suspended status when the site refuses a banned account", async 
 test("shows a plain status when the site cannot serve ads", async ($, on) => {
   const { statuses, clock } = world(on, { ...CONNECTED, adStatus: 502 });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   expect(statuses).toContain("ads unavailable — trying again next prompt");
@@ -646,7 +644,7 @@ test("shows a plain status when the site cannot serve ads", async ($, on) => {
 test("clears the status line when an ad is served", async ($, on) => {
   const { statuses, clock } = world(on, { ...CONNECTED, adStatus: 200 });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   expect(statuses).toContain(undefined);
@@ -655,7 +653,7 @@ test("clears the status line when an ad is served", async ($, on) => {
 test("sends the question, answer and session id with the device key", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -676,7 +674,7 @@ test("sends the question, answer and session id with the device key", async ($, 
 test("marks the plugin version as local when it runs from a local checkout", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, localCheckout: true });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -691,7 +689,7 @@ test("tells the site the ad request comes from Claude Desktop", async ($, on) =>
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -704,7 +702,7 @@ test("an IDE extension request sends its entrypoint as the client", async ($, on
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -717,7 +715,7 @@ test("a terminal opened from another terminal sends its own app, not the inherit
     osEnv: { __CFBundleIdentifier: "net.kovidgoyal.kitty" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -732,7 +730,7 @@ test("an IDE extension launched from a terminal sends no terminal program", asyn
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
   });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -745,10 +743,15 @@ test("a Claude Desktop viewport does not set fullscreen", async ($, on) => {
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
   });
   const viewport = { columns: 120, rows: 40, isFullscreen: true };
-  const ui = await $.ui.mount({ ...message(ANSWER), surface: "desktop", viewport });
+  const ui = await $.ui.mount({
+    ...message(ANSWER),
+    requestId: "msg_0",
+    surface: "desktop",
+    viewport,
+  });
   await ui.unmount();
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -759,10 +762,15 @@ test("a Claude Desktop viewport does not set fullscreen", async ($, on) => {
 test("sends whether the terminal renders fullscreen, as the viewport says", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   const viewport = { columns: 120, rows: 40, isFullscreen: true };
-  const ui = await $.ui.mount({ ...message(ANSWER), surface: "terminal", viewport });
+  const ui = await $.ui.mount({
+    ...message(ANSWER),
+    requestId: "msg_0",
+    surface: "terminal",
+    viewport,
+  });
   await ui.unmount();
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -773,7 +781,7 @@ for (const surface of ["terminal", "desktop"] as const) {
   test(`shows a labeled ad under the last message of the answer (${surface})`, async ($, on) => {
     const { clock } = world(on, CONNECTED);
     await $.turn.start({ text: QUESTION, turnId: "t1" });
-    await $.session.append(RESPONSE_ROW);
+    await drawReply($);
     await $.turn.complete(COMPLETE);
     await clock.settle();
 
@@ -791,10 +799,30 @@ for (const surface of ["terminal", "desktop"] as const) {
   });
 }
 
+test("shows the ad under a Claude Desktop message id that is not the transcript uuid", async ($, on) => {
+  const { clock } = world(on, {
+    ...CONNECTED,
+    surfaces: ["desktop"],
+    osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+  });
+  const requestId = "msg_abc-t0";
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  const thinking = await $.ui.mount({ ...message("Thinking"), requestId, surface: "desktop" });
+  await thinking.unmount();
+  const text = await $.ui.mount({ ...message(ANSWER), requestId, surface: "desktop" });
+  await text.unmount();
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  const ui = await $.ui.mount({ ...message(ANSWER), requestId, surface: "desktop" });
+  expect(await ui.find({ text: /Example Brand/ })).toBeDefined();
+  await ui.unmount();
+});
+
 test("clicking the call to action in the fullscreen terminal opens the ad link", async ($, on) => {
   const { clock, opened } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -813,7 +841,7 @@ test("clicking the call to action in the fullscreen terminal opens the ad link",
 test("pressing the button in the IDE panel opens the ad link", async ($, on) => {
   const { clock, opened } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -828,7 +856,7 @@ test("pressing the button in the IDE panel opens the ad link", async ($, on) => 
 test("draws the engine's own reply above the ad", async ($, on) => {
   const { clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -840,7 +868,7 @@ test("draws the engine's own reply above the ad", async ($, on) => {
 test("reports an impression once even when the ad renders twice", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -865,7 +893,7 @@ test("reports an impression once even when the ad renders twice", async ($, on) 
 test("renders no ad and reports no impression for an ad without a valid impressionId", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, ad: { ...AD, impressionId: "../../evil" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -882,7 +910,7 @@ test("renders no ad and reports no impression for an ad without a valid impressi
 test("leaves the earlier messages of the answer alone", async ($, on) => {
   const { clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -898,7 +926,7 @@ test("leaves the earlier messages of the answer alone", async ($, on) => {
 test("requests nothing when the question is blank", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   await $.turn.start({ text: "  ", turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   expect(inlineRequests(calls)).toHaveLength(0);
@@ -908,7 +936,7 @@ test("the ad request carries the question of its own turn when a prompt starts t
   const { calls, clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await $.turn.start({ text: "A second question", turnId: "t2" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -918,7 +946,7 @@ test("the ad request carries the question of its own turn when a prompt starts t
 test("a bad ad response leaves no ad and no unhandled error", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, adBody: "<html>not json</html>" });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -930,7 +958,7 @@ test("a bad ad response leaves no ad and no unhandled error", async ($, on) => {
 test("an ad request that is still open does not hold up the end of the turn", async ($, on) => {
   const { releaseInline } = world(on, { ...CONNECTED, holdInline: true });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
 
   await expect($.turn.complete(COMPLETE)).resolves.toBeDefined();
   releaseInline();
@@ -939,11 +967,11 @@ test("an ad request that is still open does not hold up the end of the turn", as
 test("two answers with the same text each show their own ad", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, inlineAds: [AD, SECOND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   await $.turn.start({ text: QUESTION, turnId: "t2" });
-  await $.session.append({ ...RESPONSE_ROW, uuid: "msg_2" });
+  await drawReply($, "msg_2");
   await $.turn.complete({ ...COMPLETE, turnId: "t2" });
   await clock.settle();
 
@@ -972,7 +1000,7 @@ const bandOffTest: typeof test = BAND_ADS ? () => {} : test;
 test("a network error on the impression request is retried", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, failFirstImpression: true });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   const ui = await $.ui.mount({ ...message(ANSWER), surface: "desktop" });
@@ -1099,7 +1127,7 @@ bandTest("a band ad that arrives after /sidequest band off is not shown", async 
 bandTest("the band ad stays after the turn completes", async ($, on) => {
   const { clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1197,7 +1225,7 @@ test("a turn a background task starts sends no ad request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: NOTIFICATION, wait: false, origin: { kind: "task-notification" } });
   await $.turn.start({ text: NOTIFICATION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1208,11 +1236,11 @@ test("after a background task's turn, the next typed prompt gets an inline ad fo
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: NOTIFICATION, wait: false, origin: { kind: "task-notification" } });
   await $.turn.start({ text: NOTIFICATION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
   await $.turn.start({ text: QUESTION, turnId: "t2" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($, "msg_2");
   await $.turn.complete({ ...COMPLETE, turnId: "t2" });
   await clock.settle();
 
@@ -1223,7 +1251,7 @@ test("a claude -p run sends no ad request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "sdk" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1234,7 +1262,7 @@ test("a prompt sent through Remote Control sends no ad request", async ($, on) =
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "bridge" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1291,7 +1319,7 @@ const USAGE = "Usage: /sidequest on | off | inline on | inline off | band on | b
 bandTest("both ad placements are on by default", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1311,7 +1339,7 @@ bandTest("/sidequest band off still requests inline ads", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   await sidequest($, "band off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1333,7 +1361,7 @@ bandTest("/sidequest inline off sends no inline request", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   await sidequest($, "inline off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1352,7 +1380,7 @@ bandTest("/sidequest inline off still requests band ads", async ($, on) => {
 bandTest("/sidequest inline off hides the inline ad that is showing", async ($, on) => {
   const { clock } = world(on, CONNECTED);
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
   await sidequest($, "inline off");
@@ -1366,7 +1394,7 @@ bandTest("/sidequest off sends no ad request of either kind", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await sidequest($, "off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1378,7 +1406,7 @@ bandTest("/sidequest on turns both placements back on", async ($, on) => {
   await sidequest($, "off");
   await sidequest($, "on");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1424,7 +1452,7 @@ for (const args of ["maybe", "band", "band maybe", "sidebar on", "on off", "band
 bandOffTest("with band ads off, a turn sends only the inline request", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1435,7 +1463,7 @@ bandOffTest("with band ads off, /sidequest off sends no ad request", async ($, o
   const { calls, clock } = world(on, CONNECTED);
   await sidequest($, "off");
   await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await $.session.append(RESPONSE_ROW);
+  await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
@@ -1450,7 +1478,7 @@ bandOffTest(
     });
     await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
     await $.turn.start({ text: QUESTION, turnId: "t1" });
-    await $.session.append(RESPONSE_ROW);
+    await drawReply($);
     await $.turn.complete(COMPLETE);
     await clock.settle();
 
