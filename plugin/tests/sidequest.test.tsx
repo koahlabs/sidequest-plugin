@@ -79,7 +79,7 @@ type WorldOptions = {
   holdFirstBand?: boolean;
   localCheckout?: boolean;
   failingCommands?: string[];
-  updateVersions?: { oldVersion: string; newVersion: string };
+  updateVersions?: { updateOutcome: string; oldVersion?: string; newVersion: string };
   osEnv?: Record<string, string>;
   unameOutput?: string;
   surfaces?: ("terminal" | "desktop" | "mobile" | "vscode")[];
@@ -109,7 +109,7 @@ function world(
     holdFirstBand = false,
     localCheckout = false,
     failingCommands = [],
-    updateVersions = { oldVersion: "0.2.6", newVersion: "0.2.7" },
+    updateVersions = { updateOutcome: "updated", oldVersion: "0.2.6", newVersion: "0.2.7" },
     osEnv = {},
     unameOutput = "Darwin\n",
     surfaces = ["terminal"],
@@ -130,6 +130,7 @@ function world(
   const answers: Record<number, string> = {
     200: JSON.stringify(deviceBody),
     202: "{}",
+    403: "{}",
     404: "{}",
   };
 
@@ -430,55 +431,99 @@ test("a session with no key reminds the user to run /sidequest-connect", async (
   expect(toasts).toEqual(["sidequest: run /sidequest-connect to link your account"]);
 });
 
-test("/sidequest in a cloud session starts with why no ads show", async ($, on) => {
-  world(on, { ...CONNECTED, osEnv: { CLAUDE_CODE_REMOTE: "true" } });
+test("/sidequest with no surface to draw ads says why no ads show", async ($, on) => {
+  world(on, { ...CONNECTED, surfaces: [] });
 
   const text = await sidequest($, "");
   expect(text.split("\n")[0]).toBe(
-    "Ads don't show in cloud sessions. Run Claude Code on your computer (terminal, Claude Desktop, or VS Code) to see ads and earn.",
+    "Ads do not show in Claude Code on the web. To see ads and earn, run Claude Code on your computer: in the terminal, Claude Desktop, or VS Code.",
   );
 });
 
-test("/sidequest shows the balance without the threshold once it is over it", async ($, on) => {
-  world(on, {
-    ...CONNECTED,
-    polls: [200],
-    deviceBody: {
-      email: "ada@example.com",
-      balanceCents: 1240,
-      payoutThresholdCents: 1000,
-    },
-  });
+test("/sidequest with no surface to draw ads has no ads on or off line", async ($, on) => {
+  world(on, { ...CONNECTED, surfaces: [] });
 
-  expect(await sidequest($, "")).toContain("Next payout: $12.40 so far.\n");
+  expect(await sidequest($, "")).not.toContain("Ads: ");
 });
 
-test("/sidequest shows the payout threshold while the balance is under it", async ($, on) => {
+const ACCOUNT_LINES: [number[], string][] = [
+  [[200], "Account: connected"],
+  [[202], "Account: waiting for you to finish connecting"],
+  [[403], "Account: suspended"],
+  [[404], "Account: not connected — run /sidequest-connect"],
+  [[500], "Account: could not reach Sidequest"],
+];
+
+for (const [polls, line] of ACCOUNT_LINES) {
+  test(`/sidequest shows "${line}" when the site answers ${polls[0]}`, async ($, on) => {
+    world(on, { ...CONNECTED, polls });
+
+    expect(await sidequest($, "")).toContain(line);
+  });
+}
+
+test("/sidequest shows no account when there is no key", async ($, on) => {
+  world(on);
+
+  expect(await sidequest($, "")).toContain("Account: not connected — run /sidequest-connect");
+});
+
+test("/sidequest shows the balance and when the payout comes once it is payable", async ($, on) => {
   world(on, {
     ...CONNECTED,
     polls: [200],
     deviceBody: {
       email: "ada@example.com",
-      balanceCents: 410,
-      payoutThresholdCents: 1000,
+      payout: { balanceCents: 1240, thresholdCents: 1000, payable: true },
     },
   });
 
   expect(await sidequest($, "")).toContain(
-    "Next payout: $4.10 so far. Payouts start above $10.00.",
+    "Balance: $12.40. You get paid after the month ends, once Stripe is connected.\n",
   );
 });
 
-test("/sidequest shows no payout line when the site sends no earnings", async ($, on) => {
-  world(on, { ...CONNECTED, polls: [200] });
+test("/sidequest shows the payout threshold while the balance is not payable", async ($, on) => {
+  world(on, {
+    ...CONNECTED,
+    polls: [200],
+    deviceBody: {
+      email: "ada@example.com",
+      payout: { balanceCents: 410, thresholdCents: 1000, payable: false },
+    },
+  });
 
-  expect(await sidequest($, "")).not.toContain("Next payout");
+  expect(await sidequest($, "")).toContain(
+    "Balance: $4.10. You get paid when your balance is more than $10.00.",
+  );
 });
 
-test("/sidequest links to the earnings page before the account is connected", async ($, on) => {
-  world(on);
+test("/sidequest shows no balance when the site sends no payout", async ($, on) => {
+  world(on, { ...CONNECTED, polls: [200] });
+
+  expect(await sidequest($, "")).not.toContain("Balance:");
+});
+
+test("/sidequest shows no balance when the payout is malformed", async ($, on) => {
+  world(on, {
+    ...CONNECTED,
+    polls: [200],
+    deviceBody: { email: "ada@example.com", payout: { balanceCents: "1240", payable: true } },
+  });
+
+  expect(await sidequest($, "")).not.toContain("Balance:");
+});
+
+test("/sidequest links to the earnings page once the device is connected", async ($, on) => {
+  world(on, { ...CONNECTED, polls: [200] });
 
   expect(await sidequest($, "")).toContain(`See your earnings: ${SITE}/account`);
+});
+
+test("/sidequest does not link to the earnings page before the account is connected", async ($, on) => {
+  world(on);
+
+  expect(await sidequest($, "")).not.toContain("See your earnings");
 });
 
 test("a newer version on GitHub is announced at session start", async ($, on) => {
@@ -525,8 +570,22 @@ test("/sidequest update names the old and new versions", async ($, on) => {
   );
 });
 
+test("/sidequest update without an old version names only the new one", async ($, on) => {
+  world(on, {
+    ...CONNECTED,
+    updateVersions: { updateOutcome: "updated", newVersion: "0.2.7" },
+  });
+
+  expect(await sidequest($, "update")).toBe(
+    "Sidequest updated to 0.2.7. Run /reload-plugins to start using it.",
+  );
+});
+
 test("/sidequest update on the latest version says so", async ($, on) => {
-  world(on, { ...CONNECTED, updateVersions: { oldVersion: "0.2.7", newVersion: "0.2.7" } });
+  world(on, {
+    ...CONNECTED,
+    updateVersions: { updateOutcome: "up_to_date", oldVersion: "0.2.7", newVersion: "0.2.7" },
+  });
 
   expect(await sidequest($, "update")).toBe("Sidequest is already on the latest version (0.2.7).");
 });
@@ -535,7 +594,7 @@ test("/sidequest update that fails shows the command to run in a terminal", asyn
   world(on, { ...CONNECTED, failingCommands: ["claude"] });
 
   expect(await sidequest($, "update")).toBe(
-    "Sidequest could not update. Run these in your terminal, then run /reload-plugins:\n```\nclaude plugin marketplace update sidequest\nclaude plugin update sidequest@sidequest\n```",
+    "Sidequest could not update. Check your internet connection and run /sidequest update again. If it still fails, run these in a terminal, then run /reload-plugins:\n```\nclaude plugin marketplace update sidequest\nclaude plugin update sidequest@sidequest\n```",
   );
 });
 

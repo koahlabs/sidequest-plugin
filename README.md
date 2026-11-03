@@ -77,7 +77,7 @@ Each request goes to getsidequest.dev. It carries the last question and answer (
 ## Troubleshooting
 
 - **No ad appears.** Some requests return no ad. Ask another question.
-- **No ad appears in a Claude Code session on the web.** Ads do not show in cloud sessions. Run Claude Code on your computer, in the terminal, Claude Desktop, or VS Code.
+- **No ad appears in a Claude Code session on the web.** Ads show only when Claude Code runs on your computer: in the terminal, Claude Desktop, or VS Code.
 - **Claude asks you to run `/sidequest-connect`, or the status line shows `sidequest: not connected`.** Run `/sidequest-connect`.
 - **The plugin does not load.** Start a new session, or run `/reload-plugins`.
 - **`claude: command not found`.** Install the CLI with the [official setup guide](https://code.claude.com/docs/en/setup).

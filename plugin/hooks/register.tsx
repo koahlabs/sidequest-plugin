@@ -12,6 +12,7 @@ const LATEST_MANIFEST_URL =
   "https://raw.githubusercontent.com/koahlabs/sidequest-plugin/main/plugin/.claude-plugin/plugin.json";
 const UPDATE_TIMEOUT_MS = 120_000;
 const NEVER_ENTER = "Only enter a code that Claude showed you.";
+const NOT_CONNECTED = "not connected — run /sidequest-connect";
 const connectUrl = (base: string, userCode: string) => `${base}/connect?code=${userCode}`;
 const codeNotice = (base: string, userCode: string) =>
   `copy ${connectUrl(base, userCode)} into your browser. ${NEVER_ENTER}`;
@@ -153,30 +154,55 @@ const updateNotice = (version: string) => `Sidequest ${version} is ready. Run /s
 
 const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
-const fetchDevice = ($: EngineInterface, base: string, key: string) =>
-  $.http
+type Payout = { balanceCents: number; thresholdCents: number; payable: boolean };
+type DeviceStatus =
+  | { kind: "connected"; email: string; payout?: Payout }
+  | { kind: "pending" | "suspended" | "not_found" | "unavailable" };
+
+const DEVICE_STATES = { 202: "pending", 403: "suspended", 404: "not_found" } as const;
+
+const isPayout = (payout: Partial<Payout> | null | undefined): payout is Payout =>
+  typeof payout?.balanceCents === "number" &&
+  typeof payout.thresholdCents === "number" &&
+  typeof payout.payable === "boolean";
+
+// The site sends the payout only when it can read earnings, and decides itself whether it is payable.
+async function deviceStatus($: EngineInterface, base: string, key: string): Promise<DeviceStatus> {
+  const res = await $.http
     .fetch(`${base}/api/device`, { headers: { Authorization: `Bearer ${key}` } })
     .catch(() => undefined);
-
-// The site sends the balance and threshold together, and neither when it cannot read earnings.
-async function payoutLine($: EngineInterface, base: string, key: string) {
-  const res = await fetchDevice($, base, key);
-  if (res?.status !== 200) return undefined;
-  const { balanceCents, payoutThresholdCents } = JSON.parse(res.text) as {
-    balanceCents?: number;
-    payoutThresholdCents: number;
-  };
-  if (balanceCents === undefined) return undefined;
-  const line = `Next payout: ${dollars(balanceCents)} so far.`;
-  return balanceCents > payoutThresholdCents
-    ? line
-    : `${line} Payouts start above ${dollars(payoutThresholdCents)}.`;
+  const state = DEVICE_STATES[res?.status as keyof typeof DEVICE_STATES];
+  if (state) return { kind: state };
+  if (res?.status !== 200) return { kind: "unavailable" };
+  try {
+    const { email, payout } = JSON.parse(res.text) as {
+      email?: unknown;
+      payout?: Partial<Payout> | null;
+    };
+    if (typeof email !== "string") return { kind: "unavailable" };
+    return { kind: "connected", email, ...(isPayout(payout) && { payout }) };
+  } catch {
+    return { kind: "unavailable" };
+  }
 }
+
+const ACCOUNT_TEXT: Record<DeviceStatus["kind"], string> = {
+  connected: "connected",
+  suspended: "suspended",
+  not_found: NOT_CONNECTED,
+  pending: "waiting for you to finish connecting",
+  unavailable: "could not reach Sidequest",
+};
+
+const payoutLine = ({ balanceCents, thresholdCents, payable }: Payout) =>
+  payable
+    ? `Balance: ${dollars(balanceCents)}. You get paid after the month ends, once Stripe is connected.`
+    : `Balance: ${dollars(balanceCents)}. You get paid when your balance is more than ${dollars(thresholdCents)}.`;
 
 const MARKETPLACE_UPDATE = ["plugin", "marketplace", "update", "sidequest"];
 const PLUGIN_UPDATE = ["plugin", "update", "sidequest@sidequest"];
 
-// The versions come from `plugin update --json`; any failure shows the commands to run by hand.
+// The outcome and versions come from `plugin update --json`; any failure shows the commands to run by hand.
 async function updateReply($: EngineInterface): Promise<string> {
   const claude = (await $.env.get("CLAUDE_CODE_EXECPATH")) ?? "claude";
   const run = (args: string[]) =>
@@ -184,39 +210,45 @@ async function updateReply($: EngineInterface): Promise<string> {
   try {
     if ((await run(MARKETPLACE_UPDATE)).exitCode === 0) {
       const { exitCode, stdout } = await run([...PLUGIN_UPDATE, "--json"]);
-      const { oldVersion, newVersion } = JSON.parse(stdout) as Record<string, string>;
-      if (exitCode === 0 && newVersion) {
-        return oldVersion === newVersion
-          ? `Sidequest is already on the latest version (${newVersion}).`
-          : `Sidequest updated from ${oldVersion} to ${newVersion}. Run /reload-plugins to start using it.`;
+      const { updateOutcome, oldVersion, newVersion } = JSON.parse(stdout) as Record<
+        string,
+        string | undefined
+      >;
+      if (exitCode === 0 && updateOutcome === "up_to_date") {
+        return `Sidequest is already on the latest version (${newVersion}).`;
+      }
+      if (exitCode === 0 && updateOutcome === "updated" && newVersion) {
+        const updated = oldVersion
+          ? `Sidequest updated from ${oldVersion} to ${newVersion}.`
+          : `Sidequest updated to ${newVersion}.`;
+        return `${updated} Run /reload-plugins to start using it.`;
       }
     }
   } catch {}
   const commands = [MARKETPLACE_UPDATE, PLUGIN_UPDATE].map((args) => `claude ${args.join(" ")}`);
-  return `Sidequest could not update. Run these in your terminal, then run /reload-plugins:\n\`\`\`\n${commands.join("\n")}\n\`\`\``;
+  return `Sidequest could not update. Check your internet connection and run /sidequest update again. If it still fails, run these in a terminal, then run /reload-plugins:\n\`\`\`\n${commands.join("\n")}\n\`\`\``;
 }
 
 async function statusLines($: EngineInterface, current: Settings) {
   const base = await site($);
   const key = await storedDeviceKey($);
-  const [device, os, newer, cloud, payout] = await Promise.all([
+  const [device, os, newer, surfaces, connection] = await Promise.all([
     deviceMetadata($),
     currentOs($),
     newerVersion($),
-    // Claude Code on the web sets CLAUDE_CODE_REMOTE; a local session, with Remote Control too, does not.
-    $.env.get("CLAUDE_CODE_REMOTE").then((remote) => remote === "true"),
-    key && payoutLine($, base, key),
+    $.session.surfaces(),
+    key ? deviceStatus($, base, key) : undefined,
   ]);
   const app = joined(
     device.client,
     device.terminalProgram,
     device.fullscreen !== undefined && (device.fullscreen ? "fullscreen" : "not fullscreen"),
   );
-  const account = key ? "connected" : "not connected — run /sidequest-connect";
+  const account = connection ? ACCOUNT_TEXT[connection.kind] : NOT_CONNECTED;
   return [
-    cloud &&
-      "Ads don't show in cloud sessions. Run Claude Code on your computer (terminal, Claude Desktop, or VS Code) to see ads and earn.",
-    settingsText(current),
+    surfaces.length > 0
+      ? settingsText(current)
+      : "Ads do not show in Claude Code on the web. To see ads and earn, run Claude Code on your computer: in the terminal, Claude Desktop, or VS Code.",
     joined(
       device.pluginVersion && `Sidequest v${device.pluginVersion}`,
       device.claudeVersion && `Claude Code ${device.claudeVersion}`,
@@ -224,8 +256,8 @@ async function statusLines($: EngineInterface, current: Settings) {
     app && `App: ${app}`,
     joined(os && `OS: ${os}`, `Account: ${account}`),
     newer && updateNotice(newer),
-    payout,
-    `See your earnings: ${base}/account`,
+    connection?.kind === "connected" && connection.payout && payoutLine(connection.payout),
+    key && `See your earnings: ${base}/account`,
   ].filter(Boolean);
 }
 
@@ -325,15 +357,14 @@ async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: 
 
   while ((await $.clock.now()) < expiresAt) {
     await $.clock.sleep(POLL_MS);
-    const res = await fetchDevice($, base, key);
+    const status = await deviceStatus($, base, key);
     if (!(await stillPending())) return;
-    if (res?.status === 200) {
-      const { email } = JSON.parse(res.text) as { email: string };
+    if (status.kind === "connected") {
       await $.store.set("deviceKey", key);
-      return finish(`Sidequest connected as ${email}.`);
+      return finish(`Sidequest connected as ${status.email}.`);
     }
-    if (res?.status === 403) return finish("Sidequest: this account is suspended.");
-    if (res?.status === 404) break;
+    if (status.kind === "suspended") return finish("Sidequest: this account is suspended.");
+    if (status.kind === "not_found") break;
   }
   if (await stillPending()) {
     await finish("Sidequest: the code expired. Run /sidequest-connect again.");
@@ -473,7 +504,7 @@ async function requestAd(
     return served;
   }
   if (res.status === 401) {
-    $.ui.status("not connected — run /sidequest-connect");
+    $.ui.status(NOT_CONNECTED);
   } else if (res.status === 403) {
     $.ui.status("account suspended");
   } else if (res.status !== 204) {
