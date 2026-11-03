@@ -3,10 +3,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-APP=Ghostty
-extra_cleanup() { pkill -f "$URL" 2>/dev/null || true; }
-
 start_site
-write_launcher
+write_launcher "$PROMPT"
 open -na Ghostty --args -e "$WORK/claude.sh"
-drive_cli_in_app
+finish window_has Ghostty "$AD_TEXT"

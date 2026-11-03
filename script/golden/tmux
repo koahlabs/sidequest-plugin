@@ -1,27 +1,15 @@
 #!/usr/bin/env bash
-# Golden render test: claude in a tmux pane.
+# Golden render test: claude in a tmux pane. The session ends when cleanup stops claude.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-SESSION=sidequest-golden
-extra_cleanup() { tmux kill-session -t "$SESSION" 2>/dev/null || true; }
-
+SESSION=sidequest-golden-$RUN
 pane_has() {
   EVIDENCE=$WORK/pane.txt
-  tmux capture-pane -p -t "$SESSION" >"$EVIDENCE"
-  grep -qiF "$1" "$EVIDENCE"
+  tmux capture-pane -p -t "$SESSION" >"$EVIDENCE" && grep -qF "$1" "$EVIDENCE"
 }
 
 start_site
-write_launcher
-tmux kill-session -t "$SESSION" 2>/dev/null || true
+write_launcher "$PROMPT"
 tmux new-session -d -s "$SESSION" -x 160 -y 45 "$WORK/claude.sh"
-
-wait_until "claude to start" pane_has "$READY_TEXT"
-sleep 3
-tmux send-keys -t "$SESSION" -l "/sidequest-connect"
-tmux send-keys -t "$SESSION" Enter
-wait_until "the connection" pane_has "connected as"
-tmux send-keys -t "$SESSION" -l "$PROMPT"
-tmux send-keys -t "$SESSION" Enter
 finish pane_has "$AD_TEXT"

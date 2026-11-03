@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Runs every golden surface in order and prints one line per surface.
+# Runs the terminal surfaces in parallel, then Desktop alone: it needs one keypress,
+# and a window opening at that moment would take the focus.
 set -uo pipefail
 dir=$(dirname "$0")
-failed=()
-for surface in tmux ghostty terminal-app desktop; do
-  "$dir/$surface" || failed+=("$surface")
+terminals="tmux ghostty terminal-app"
+logs=$(mktemp -d)
+for surface in $terminals; do
+  "$dir/$surface" >"$logs/$surface" 2>&1 &
 done
-echo
-for surface in tmux ghostty terminal-app desktop; do
-  case " ${failed[*]-} " in
-    *" $surface "*) echo "FAIL $surface" ;;
-    *) echo "PASS $surface" ;;
-  esac
+wait
+"$dir/desktop" >"$logs/desktop" 2>&1
+failed=0
+for surface in $terminals desktop; do
+  cat "$logs/$surface"
+  grep -q "^PASS" "$logs/$surface" || failed=1
 done
-[ ${#failed[@]} -eq 0 ]
+exit $failed

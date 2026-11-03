@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# One-time setup: saves a device key for plugin/ so the terminal tests can ask for ads.
+# The tests never connect, so they cannot race each other over the saved key.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+SESSION=sidequest-golden-connect-$RUN
+start_site
+write_launcher "/sidequest-connect"
+tmux new-session -d -s "$SESSION" -x 160 -y 45 "$WORK/claude.sh"
+# The plugin shows this toast right after it saves the key.
+deadline=$((SECONDS + TIMEOUT))
+until tmux capture-pane -p -t "$SESSION" | grep -qF "connected as"; do
+  ((SECONDS < deadline)) || fail "the plugin did not finish connecting"
+  sleep 0.5
+done
+echo "Connected plugin/ to the fake site. The saved key works for every golden run."

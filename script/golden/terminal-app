@@ -3,16 +3,22 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-APP=Terminal
+# Cleanup stops claude first; closing a busy tab would open a dialog, so wait for idle.
 extra_cleanup() {
-  pkill -f "$URL" 2>/dev/null || true
-  osascript -e "tell application \"Terminal\" to close window id ${WINDOW_ID:-0} saving no" 2>/dev/null || true
+  [ -n "${WINDOW_ID:-}" ] || return 0
+  osascript -e "tell application \"Terminal\"
+    repeat 20 times
+      if not (busy of tab 1 of window id $WINDOW_ID) then exit repeat
+      delay 0.25
+    end repeat
+    close window id $WINDOW_ID
+  end tell" >/dev/null 2>&1 || true
 }
 
 start_site
-write_launcher
-WINDOW_ID=$(osascript -e 'tell application "Terminal"
-  do script "exec '"$WORK"'/claude.sh"
+write_launcher "$PROMPT"
+WINDOW_ID=$(osascript -e "tell application \"Terminal\"
+  do script \"exec $WORK/claude.sh\"
   return id of front window
-end tell')
-drive_cli_in_app
+end tell")
+finish window_has Terminal "$AD_TEXT"
