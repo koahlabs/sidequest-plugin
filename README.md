@@ -109,6 +109,38 @@ The last command is optional. It removes the marketplace.
 
 `bun run uninstall-plugin` runs the uninstall and the marketplace remove.
 
+### Golden render tests
+
+These scripts drive the real apps and prove that an inline ad draws. A local fake site stands in for getsidequest.dev. A surface passes when this run's ad text is on screen and the fake site receives this run's impression.
+
+```
+script/golden/tmux
+script/golden/ghostty
+script/golden/terminal-app
+script/golden/desktop
+script/golden/all
+```
+
+Each script runs alone, and each run has its own port and ad, so runs can go in parallel. `all` runs the terminal scripts in parallel, then `desktop`.
+
+Before the first run, save a device key for `plugin/` once:
+
+```
+script/golden/connect
+```
+
+The terminal scripts load `plugin/` with `--plugin-dir` and pass the prompt at startup, so they never type. The `desktop` script uses the installed plugin, so install it from this checkout first:
+
+```
+claude plugin marketplace remove sidequest && claude plugin marketplace add "$PWD" && claude plugin install sidequest@sidequest
+```
+
+The `desktop` script presses Enter once in Claude Desktop, and it edits `~/.claude/settings.json` and restores it on exit. It refuses to start while that file already points at a local site. The scripts read app windows, so give your terminal Accessibility and Screen Recording access.
+
+A failed run prints three facts: whether the plugin asked for an ad, whether the ad is on screen, and whether the impression arrived. "ad requested: no" means the plugin has no saved device key. For the terminal scripts, run `script/golden/connect`. For Desktop, run `/sidequest-connect` once in a Desktop session; any key works with the fake site.
+
+This suite is manual. Run it before you push a plugin change.
+
 ## Checks
 
 ```

@@ -57,7 +57,9 @@ let settingsOnce: Promise<Settings> | undefined;
 // background tasks, schedules, peers, Remote Control or `claude -p` start. Only those turns are here.
 const questions = new Map<string, string>();
 let nextTurnFromPerson = true;
-let answerRowId: string | undefined;
+// Every AssistantMessage id drawn this load, and the newest first-seen id per surface this turn.
+const renderedIds = new Set<string>();
+const newestRenderedId = new Map<RenderSurface, string>();
 let bandTurnId: string | undefined;
 let bandColumns: number | undefined;
 
@@ -532,6 +534,7 @@ async function refreshBand($: EngineInterface, turnId: string, question: string)
 }
 
 type RenderEvent = Parameters<EngineInterface["ui"]["resolve"]>[0];
+type RenderSurface = RenderEvent["surface"];
 
 // A blit to an Image is denied where the terminal draws its alt instead of the
 // pixels (Terminal.app). The first drawn ad asks once; a no switches to the badge,
@@ -610,7 +613,8 @@ export const register: Register = (on) => {
   imagesProbe = undefined;
   settingsOnce = undefined;
   bandColumns = undefined;
-  answerRowId = undefined;
+  renderedIds.clear();
+  newestRenderedId.clear();
   questions.clear();
 
   on("session.start", async ($, e, next) => {
@@ -715,6 +719,7 @@ export const register: Register = (on) => {
     nextTurnFromPerson = true;
     if (fromPerson) {
       questions.set(e.turnId, e.text);
+      newestRenderedId.clear();
       bandTurnId = e.turnId;
       // The band and inline requests each use one of the site's daily ad requests.
       void refreshBand($, e.turnId, e.text);
@@ -722,19 +727,14 @@ export const register: Register = (on) => {
     return next(e);
   });
 
-  // The last response row of the main loop is the message the ad goes under.
-  on("session.append", { door: "response" }, async ($, e, next) => {
-    if (e.agentId === undefined) answerRowId = e.uuid;
-    return next(e);
-  });
-
+  // The slot is keyed by the reply's render ids, learned from the render hook: Desktop and the terminal name messages differently.
   on("turn.complete", async ($, e, next) => {
     // Read before any await: a prompt typed during the answer starts the next turn.
     const question = questions.get(e.turnId);
-    const messageId = answerRowId;
     questions.delete(e.turnId);
     const result = await next(e);
-    if (e.agentId !== undefined || !question?.trim() || messageId === undefined) return result;
+    const keys = [...newestRenderedId.values()];
+    if (e.agentId !== undefined || !question?.trim() || keys.length === 0) return result;
     if (e.reason !== "answer" || !e.answer.trim()) return result;
     if (!(await readSettings($)).inline) return result;
     const key = await storedDeviceKey($);
@@ -744,7 +744,7 @@ export const register: Register = (on) => {
     void requestAd($, key, "inline", question, e.answer)
       .then(async (ad) => {
         if (!ad) return;
-        const slot: AdSlot = { messageId, ad };
+        const slot: AdSlot = { keys, ad };
         await update($, slots, (list) => [...(list ?? []), slot].slice(-MAX_SLOTS));
       })
       .catch(() => {});
@@ -754,9 +754,13 @@ export const register: Register = (on) => {
   // The ad sits under the last message of the reply it was served for.
   on("ui.render", { component: "AssistantMessage" }, async ($, e, next) => {
     if (e.surface === "terminal") fullscreen = e.viewport?.isFullscreen ?? fullscreen;
+    if (!renderedIds.has(e.requestId)) {
+      renderedIds.add(e.requestId);
+      newestRenderedId.set(e.surface, e.requestId);
+    }
     if (!(await readSettings($)).inline) return next(e);
     const list = await read($, slots);
-    const slot = list.find((s) => s.messageId === e.requestId);
+    const slot = list.find((s) => s.keys?.includes(e.requestId));
     if (slot === undefined || !isAd(slot.ad)) return next(e);
 
     const { ad } = slot;

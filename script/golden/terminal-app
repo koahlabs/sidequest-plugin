@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Golden render test: claude in an Apple Terminal window.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+# Cleanup stops claude first; closing a busy tab would open a dialog, so wait for idle.
+extra_cleanup() {
+  [ -n "${WINDOW_ID:-}" ] || return 0
+  osascript -e "tell application \"Terminal\"
+    repeat 20 times
+      if not (busy of tab 1 of window id $WINDOW_ID) then exit repeat
+      delay 0.25
+    end repeat
+    close window id $WINDOW_ID
+  end tell" >/dev/null 2>&1 || true
+}
+
+start_site
+write_launcher "$PROMPT"
+WINDOW_ID=$(osascript -e "tell application \"Terminal\"
+  do script \"exec $WORK/claude.sh\"
+  return id of front window
+end tell")
+finish window_has Terminal "$AD_TEXT"

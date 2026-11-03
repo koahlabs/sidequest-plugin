@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Golden render test: claude in a tmux pane. The session ends when cleanup stops claude.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+SESSION=sidequest-golden-$RUN
+pane_has() {
+  EVIDENCE=$WORK/pane.txt
+  tmux capture-pane -p -t "$SESSION" >"$EVIDENCE" && grep -qF "$1" "$EVIDENCE"
+}
+
+start_site
+write_launcher "$PROMPT"
+tmux new-session -d -s "$SESSION" -x 160 -y 45 "$WORK/claude.sh"
+finish pane_has "$AD_TEXT"

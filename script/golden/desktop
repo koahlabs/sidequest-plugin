@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Golden render test: Claude Desktop with the plugin installed from this checkout.
+# Desktop reads the user's ~/.claude/settings.json, so this points it at the fake site
+# for the run and puts the file back after.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+SETTINGS=$HOME/.claude/settings.json
+extra_cleanup() { [ ! -f "$WORK/settings.json" ] || cp "$WORK/settings.json" "$SETTINGS"; }
+
+[ "$(claude plugin list --json | jq -r '.[] | select(.id == "sidequest@sidequest") | .readFromFolder')" = "$ROOT/plugin" ] ||
+  fail "install the plugin from this checkout: claude plugin marketplace remove sidequest && claude plugin marketplace add $ROOT && claude plugin install sidequest@sidequest"
+# A local URL here means another desktop run is going, or one was killed before it put the file back.
+jq -e '.env.SIDEQUEST_URL // "" | startswith("http://127.0.0.1") | not' "$SETTINGS" >/dev/null ||
+  fail "$SETTINGS already points at a local site. Wait for the other desktop run, or remove env.SIDEQUEST_URL."
+
+start_site
+cp "$SETTINGS" "$WORK/settings.json"
+jq --arg url "$URL" '.env.SIDEQUEST_URL = $url' "$WORK/settings.json" >"$SETTINGS"
+open "claude://code/new?q=$(jq -rn --arg prompt "$PROMPT" '$prompt | @uri')"
+sleep 6
+# The one keypress in the suite: the link fills in the prompt but does not send it.
+osascript -e 'tell application "Claude" to activate' -e 'delay 1' -e 'tell application "System Events" to key code 36'
+finish window_has Claude "$AD_TEXT"

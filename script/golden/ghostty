@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Golden render test: claude in a Ghostty window.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+start_site
+write_launcher "$PROMPT"
+open -na Ghostty --args -e "$WORK/claude.sh"
+finish window_has Ghostty "$AD_TEXT"

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Runs the terminal surfaces in parallel, then Desktop alone: it needs one keypress,
+# and a window opening at that moment would take the focus.
+set -uo pipefail
+dir=$(dirname "$0")
+terminals="tmux ghostty terminal-app"
+logs=$(mktemp -d)
+for surface in $terminals; do
+  "$dir/$surface" >"$logs/$surface" 2>&1 &
+done
+wait
+"$dir/desktop" >"$logs/desktop" 2>&1
+failed=0
+for surface in $terminals desktop; do
+  cat "$logs/$surface"
+  grep -q "^PASS" "$logs/$surface" || failed=1
+done
+exit $failed
