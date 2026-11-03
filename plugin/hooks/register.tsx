@@ -10,13 +10,7 @@ const SITE = "https://getsidequest.dev";
 const POLL_MS = 1000;
 const LATEST_MANIFEST_URL =
   "https://raw.githubusercontent.com/koahlabs/sidequest-plugin/main/plugin/.claude-plugin/plugin.json";
-const UPDATE_STEPS = [
-  ["plugin", "marketplace", "update", "sidequest"],
-  ["plugin", "update", "sidequest@sidequest"],
-];
 const UPDATE_TIMEOUT_MS = 120_000;
-const CLOUD_REPORT =
-  "Ads don't show in cloud sessions. Run Claude Code on your computer (terminal, Claude Desktop, or VS Code) to see ads and earn.";
 const NEVER_ENTER = "Only enter a code that Claude showed you.";
 const connectUrl = (base: string, userCode: string) => `${base}/connect?code=${userCode}`;
 const codeNotice = (base: string, userCode: string) =>
@@ -52,7 +46,6 @@ let clientOnce: Promise<string | undefined> | undefined;
 let pluginVersionOnce: Promise<string | undefined> | undefined;
 let claudeVersionOnce: Promise<string | undefined> | undefined;
 let newerVersionOnce: Promise<string | undefined> | undefined;
-let cloudOnce: Promise<boolean> | undefined;
 let terminalProgramOnce: Promise<string | undefined> | undefined;
 let fullscreen: boolean | undefined;
 // Whether this terminal draws an Image's pixels; unknown until a blit answers.
@@ -139,19 +132,16 @@ async function openBrowser($: EngineInterface, url: string, os: Os | undefined) 
 
 const joined = (...parts: (string | false | undefined)[]) => parts.filter(Boolean).join(" · ");
 
-// Claude Code on the web sets CLAUDE_CODE_REMOTE; a local session, with Remote Control too, does not.
-function inCloudSession($: EngineInterface): Promise<boolean> {
-  return (cloudOnce ??= $.env.get("CLAUDE_CODE_REMOTE").then((remote) => remote === "true"));
-}
+const versionParts = (version: string) => version.split(".").map(Number);
 
-const versionParts = (version: string) => version.split("+")[0]!.split(".").map(Number);
-
-// The version on GitHub's main branch when it is strictly newer than the installed one; any failure is no notice.
+// The version on GitHub's main branch when it is strictly newer than the installed one; any failure
+// is no notice. A local checkout gets none, as on the site: an update does not change it.
 function newerVersion($: EngineInterface): Promise<string | undefined> {
   return (newerVersionOnce ??= Promise.all([pluginVersion($), $.http.fetch(LATEST_MANIFEST_URL)])
     .then(([installed, res]) => {
       const { version } = JSON.parse(res.text) as { version: string };
-      if (!installed || !/^\d+\.\d+\.\d+$/.test(version)) return undefined;
+      if (!installed || installed.includes("+") || !/^\d+\.\d+\.\d+$/.test(version))
+        return undefined;
       const [latest, current] = [versionParts(version), versionParts(installed)];
       const index = latest.findIndex((part, i) => part !== current[i]);
       return index >= 0 && latest[index]! > current[index]! ? version : undefined;
@@ -159,61 +149,73 @@ function newerVersion($: EngineInterface): Promise<string | undefined> {
     .catch(() => undefined));
 }
 
+const updateNotice = (version: string) => `Sidequest ${version} is ready. Run /sidequest update.`;
+
 const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
-// The balance comes from the site; it sends none when it cannot read earnings.
-async function payoutLine($: EngineInterface, base: string): Promise<string | undefined> {
-  const key = await storedDeviceKey($);
-  if (!key) return undefined;
-  try {
-    const res = await $.http.fetch(`${base}/api/device`, {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    if (res.status !== 200) return undefined;
-    const { balanceCents, payoutThresholdCents } = JSON.parse(res.text) as {
-      balanceCents?: number;
-      payoutThresholdCents?: number;
-    };
-    if (typeof balanceCents !== "number" || typeof payoutThresholdCents !== "number") {
-      return undefined;
-    }
-    const line = `Next payout: ${dollars(balanceCents)} so far.`;
-    return balanceCents > payoutThresholdCents
-      ? line
-      : `${line} Payouts start above ${dollars(payoutThresholdCents)}.`;
-  } catch {
-    return undefined;
-  }
+const fetchDevice = ($: EngineInterface, base: string, key: string) =>
+  $.http
+    .fetch(`${base}/api/device`, { headers: { Authorization: `Bearer ${key}` } })
+    .catch(() => undefined);
+
+// The site sends the balance and threshold together, and neither when it cannot read earnings.
+async function payoutLine($: EngineInterface, base: string, key: string) {
+  const res = await fetchDevice($, base, key);
+  if (res?.status !== 200) return undefined;
+  const { balanceCents, payoutThresholdCents } = JSON.parse(res.text) as {
+    balanceCents?: number;
+    payoutThresholdCents: number;
+  };
+  if (balanceCents === undefined) return undefined;
+  const line = `Next payout: ${dollars(balanceCents)} so far.`;
+  return balanceCents > payoutThresholdCents
+    ? line
+    : `${line} Payouts start above ${dollars(payoutThresholdCents)}.`;
 }
 
-async function updatePlugin($: EngineInterface): Promise<boolean> {
+const MARKETPLACE_UPDATE = ["plugin", "marketplace", "update", "sidequest"];
+const PLUGIN_UPDATE = ["plugin", "update", "sidequest@sidequest"];
+
+// The versions come from `plugin update --json`; any failure shows the commands to run by hand.
+async function updateReply($: EngineInterface): Promise<string> {
   const claude = (await $.env.get("CLAUDE_CODE_EXECPATH")) ?? "claude";
+  const run = (args: string[]) =>
+    $.process.run([claude, ...args], { timeoutMs: UPDATE_TIMEOUT_MS });
   try {
-    for (const step of UPDATE_STEPS) {
-      const { exitCode } = await $.process.run([claude, ...step], { timeoutMs: UPDATE_TIMEOUT_MS });
-      if (exitCode !== 0) return false;
+    if ((await run(MARKETPLACE_UPDATE)).exitCode === 0) {
+      const { exitCode, stdout } = await run([...PLUGIN_UPDATE, "--json"]);
+      const { oldVersion, newVersion } = JSON.parse(stdout) as Record<string, string>;
+      if (exitCode === 0 && newVersion) {
+        return oldVersion === newVersion
+          ? `Sidequest is already on the latest version (${newVersion}).`
+          : `Sidequest updated from ${oldVersion} to ${newVersion}. Run /reload-plugins to start using it.`;
+      }
     }
-    return true;
-  } catch {
-    return false;
-  }
+  } catch {}
+  const commands = [MARKETPLACE_UPDATE, PLUGIN_UPDATE].map((args) => `claude ${args.join(" ")}`);
+  return `Sidequest could not update. Run these in your terminal, then run /reload-plugins:\n\`\`\`\n${commands.join("\n")}\n\`\`\``;
 }
 
 async function statusLines($: EngineInterface, current: Settings) {
-  const device = await deviceMetadata($);
-  const os = await currentOs($);
   const base = await site($);
+  const key = await storedDeviceKey($);
+  const [device, os, newer, cloud, payout] = await Promise.all([
+    deviceMetadata($),
+    currentOs($),
+    newerVersion($),
+    // Claude Code on the web sets CLAUDE_CODE_REMOTE; a local session, with Remote Control too, does not.
+    $.env.get("CLAUDE_CODE_REMOTE").then((remote) => remote === "true"),
+    key && payoutLine($, base, key),
+  ]);
   const app = joined(
     device.client,
     device.terminalProgram,
     device.fullscreen !== undefined && (device.fullscreen ? "fullscreen" : "not fullscreen"),
   );
-  const account = (await storedDeviceKey($))
-    ? "connected"
-    : "not connected — run /sidequest-connect";
-  const newer = await newerVersion($);
+  const account = key ? "connected" : "not connected — run /sidequest-connect";
   return [
-    (await inCloudSession($)) && CLOUD_REPORT,
+    cloud &&
+      "Ads don't show in cloud sessions. Run Claude Code on your computer (terminal, Claude Desktop, or VS Code) to see ads and earn.",
     settingsText(current),
     joined(
       device.pluginVersion && `Sidequest v${device.pluginVersion}`,
@@ -221,9 +223,8 @@ async function statusLines($: EngineInterface, current: Settings) {
     ),
     app && `App: ${app}`,
     joined(os && `OS: ${os}`, `Account: ${account}`),
-    base !== SITE && `Site: ${base}`,
-    newer && `A new version (${newer}) is ready. Run /sidequest update to get it.`,
-    await payoutLine($, base),
+    newer && updateNotice(newer),
+    payout,
     `See your earnings: ${base}/account`,
   ].filter(Boolean);
 }
@@ -324,9 +325,7 @@ async function pollConnection($: EngineInterface, { key, expiresAt, userCode }: 
 
   while ((await $.clock.now()) < expiresAt) {
     await $.clock.sleep(POLL_MS);
-    const res = await $.http
-      .fetch(`${base}/api/device`, { headers: { Authorization: `Bearer ${key}` } })
-      .catch(() => undefined);
+    const res = await fetchDevice($, base, key);
     if (!(await stillPending())) return;
     if (res?.status === 200) {
       const { email } = JSON.parse(res.text) as { email: string };
@@ -448,6 +447,8 @@ async function requestAd(
   question: string,
   answer?: string,
 ): Promise<KoahAd | undefined> {
+  // A cloud session seen from the web, or a -p run, has no surface to draw the ad.
+  if (!(await $.session.surfaces()).length) return undefined;
   const res = await $.http.fetch(`${await site($)}/api/ad`, {
     method: "POST",
     headers: {
@@ -572,7 +573,6 @@ export const register: Register = (on) => {
   pluginVersionOnce = undefined;
   claudeVersionOnce = undefined;
   newerVersionOnce = undefined;
-  cloudOnce = undefined;
   terminalProgramOnce = undefined;
   fullscreen = undefined;
   imagesDraw = undefined;
@@ -598,9 +598,11 @@ export const register: Register = (on) => {
     else if (!(await storedDeviceKey($))) {
       $.ui.toast("sidequest: run /sidequest-connect to link your account");
     }
-    void newerVersion($).then((version) => {
-      if (version) $.ui.toast(`Sidequest ${version} is ready. Run /sidequest update.`);
-    });
+    if (e.isInteractive) {
+      void newerVersion($).then((version) => {
+        if (version) $.ui.toast(updateNotice(version));
+      });
+    }
     return next(e);
   });
 
@@ -615,11 +617,7 @@ export const register: Register = (on) => {
     });
     if (!args) return reply(`${(await statusLines($, current)).join("\n")}\n${USAGE}`);
     if (args === "update") {
-      return reply(
-        (await updatePlugin($))
-          ? "Sidequest is updated. Run /reload-plugins to start using it."
-          : "Sidequest could not update. Run these in your terminal, then run /reload-plugins:\n```\nclaude plugin marketplace update sidequest\nclaude plugin update sidequest@sidequest\n```",
-      );
+      return reply(await updateReply($));
     }
     if (!change) return reply(USAGE);
 
@@ -710,8 +708,6 @@ export const register: Register = (on) => {
     if (!(await readSettings($)).inline) return result;
     const key = await storedDeviceKey($);
     if (!key) return result;
-    // A cloud session seen from the web, or a -p run, has no surface to draw the ad.
-    if (!(await $.session.surfaces()).length) return result;
 
     // In the background: a slow or failing ad request must not hold up the end of the turn.
     void requestAd($, key, "inline", question, e.answer)

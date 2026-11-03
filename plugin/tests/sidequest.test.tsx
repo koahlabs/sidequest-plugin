@@ -79,6 +79,7 @@ type WorldOptions = {
   holdFirstBand?: boolean;
   localCheckout?: boolean;
   failingCommands?: string[];
+  updateVersions?: { oldVersion: string; newVersion: string };
   osEnv?: Record<string, string>;
   unameOutput?: string;
   surfaces?: ("terminal" | "desktop" | "mobile" | "vscode")[];
@@ -108,6 +109,7 @@ function world(
     holdFirstBand = false,
     localCheckout = false,
     failingCommands = [],
+    updateVersions = { oldVersion: "0.2.6", newVersion: "0.2.7" },
     osEnv = {},
     unameOutput = "Darwin\n",
     surfaces = ["terminal"],
@@ -132,17 +134,14 @@ function world(
   };
 
   on("http.fetch", async (_$, e) => {
-    if (e.url === LATEST_MANIFEST_URL) {
-      const text = latestVersion ? JSON.stringify({ version: latestVersion }) : "";
-      return {
-        value: { status: latestVersion ? 200 : 404, ok: !!latestVersion, headers: {}, text },
-      };
-    }
-    const method = e.init?.method ?? "GET";
-    calls.push({ url: e.url, method, body: e.init?.body, auth: e.init?.headers?.Authorization });
     const reply = (status: number, text = "") => ({
       value: { status, ok: status < 300, headers: {}, text },
     });
+    if (e.url === LATEST_MANIFEST_URL) {
+      return latestVersion ? reply(200, JSON.stringify({ version: latestVersion })) : reply(404);
+    }
+    const method = e.init?.method ?? "GET";
+    calls.push({ url: e.url, method, body: e.init?.body, auth: e.init?.headers?.Authorization });
     if (e.url.endsWith("/api/device")) {
       if (method === "POST") {
         if (startStatus !== 201) return reply(startStatus, "{}");
@@ -176,7 +175,12 @@ function world(
     return {
       value: {
         exitCode: failingCommands.includes(e.argv[0] ?? "") ? 1 : 0,
-        stdout: e.argv[0] === "uname" ? unameOutput : `${PNG}\n`,
+        stdout:
+          e.argv[0] === "uname"
+            ? unameOutput
+            : e.argv.includes("--json")
+              ? JSON.stringify(updateVersions)
+              : `${PNG}\n`,
         stderr: "",
         isStdoutTruncated: false,
         isStderrTruncated: false,
@@ -488,33 +492,43 @@ test("a newer version on GitHub is announced at session start", async ($, on) =>
 test("/sidequest names a newer version", async ($, on) => {
   world(on, { ...CONNECTED, latestVersion: "1.10.0" });
 
-  expect(await sidequest($, "")).toContain(
-    "A new version (1.10.0) is ready. Run /sidequest update to get it.",
-  );
+  expect(await sidequest($, "")).toContain("Sidequest 1.10.0 is ready. Run /sidequest update.");
 });
 
-test("a local checkout behind GitHub is told about the newer version", async ($, on) => {
+test("a local checkout is not told to update", async ($, on) => {
   const { toasts, clock } = world(on, {
     ...CONNECTED,
-    latestVersion: "1.2.4",
+    latestVersion: "1.10.0",
     localCheckout: true,
   });
   await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
   await clock.settle();
 
-  expect(toasts).toEqual(["Sidequest 1.2.4 is ready. Run /sidequest update."]);
+  expect(toasts).toEqual([]);
 });
 
 test("/sidequest update updates the marketplace and then the plugin", async ($, on) => {
   const { opened } = world(on, { ...CONNECTED, osEnv: { CLAUDE_CODE_EXECPATH: "/opt/claude" } });
+  await sidequest($, "update");
 
-  expect(await sidequest($, "update")).toBe(
-    "Sidequest is updated. Run /reload-plugins to start using it.",
-  );
   expect(opened.filter((argv) => argv[0] === "/opt/claude")).toEqual([
     ["/opt/claude", "plugin", "marketplace", "update", "sidequest"],
-    ["/opt/claude", "plugin", "update", "sidequest@sidequest"],
+    ["/opt/claude", "plugin", "update", "sidequest@sidequest", "--json"],
   ]);
+});
+
+test("/sidequest update names the old and new versions", async ($, on) => {
+  world(on, CONNECTED);
+
+  expect(await sidequest($, "update")).toBe(
+    "Sidequest updated from 0.2.6 to 0.2.7. Run /reload-plugins to start using it.",
+  );
+});
+
+test("/sidequest update on the latest version says so", async ($, on) => {
+  world(on, { ...CONNECTED, updateVersions: { oldVersion: "0.2.7", newVersion: "0.2.7" } });
+
+  expect(await sidequest($, "update")).toBe("Sidequest is already on the latest version (0.2.7).");
 });
 
 test("/sidequest update that fails shows the command to run in a terminal", async ($, on) => {
