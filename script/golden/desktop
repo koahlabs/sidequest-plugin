@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Golden render test: Claude Desktop with the installed plugin.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+require_installed_plugin
+start_site
+override_site_url
+open "claude://code/new?q=$(python3 -I -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$PROMPT")"
+sleep 6
+osascript -e 'tell application "Claude" to activate'
+sleep 1
+osascript -e 'tell application "System Events" to key code 36'
+HINT="Run /sidequest-connect once in a Desktop session while this script's fake site is running"
+finish window_has Claude "$AD_TEXT"

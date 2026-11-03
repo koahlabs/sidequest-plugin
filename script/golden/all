@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Runs every golden surface in order and prints one line per surface.
+set -uo pipefail
+dir=$(dirname "$0")
+failed=()
+for surface in tmux ghostty terminal-app desktop; do
+  "$dir/$surface" || failed+=("$surface")
+done
+echo
+for surface in tmux ghostty terminal-app desktop; do
+  case " ${failed[*]-} " in
+    *" $surface "*) echo "FAIL $surface" ;;
+    *) echo "PASS $surface" ;;
+  esac
+done
+[ ${#failed[@]} -eq 0 ]

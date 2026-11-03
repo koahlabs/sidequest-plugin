@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Golden render test: claude in an Apple Terminal window.
+set -euo pipefail
+source "$(dirname "$0")/lib.sh"
+
+APP=Terminal
+extra_cleanup() {
+  pkill -f "$URL" 2>/dev/null || true
+  osascript -e "tell application \"Terminal\" to close window id ${WINDOW_ID:-0} saving no" 2>/dev/null || true
+}
+
+start_site
+write_launcher
+WINDOW_ID=$(osascript -e 'tell application "Terminal"
+  do script "exec '"$WORK"'/claude.sh"
+  return id of front window
+end tell')
+drive_cli_in_app

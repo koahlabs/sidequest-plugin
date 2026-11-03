@@ -109,6 +109,28 @@ The last command is optional. It removes the marketplace.
 
 `bun run uninstall-plugin` runs the uninstall and the marketplace remove.
 
+### Golden render tests
+
+These scripts drive the real apps and prove that an inline ad draws. A local fake site stands in for getsidequest.dev. A surface passes when the fake site receives the impression and the ad text is on screen.
+
+```
+script/golden/tmux
+script/golden/ghostty
+script/golden/terminal-app
+script/golden/desktop
+script/golden/all
+```
+
+Each script runs alone. `all` runs them in order and prints one line per surface. The terminal scripts load `plugin/` with `--plugin-dir`. The `desktop` script uses the installed plugin, so install it from this checkout first:
+
+```
+claude plugin marketplace remove sidequest && claude plugin marketplace add "$PWD" && claude plugin install sidequest@sidequest
+```
+
+The GUI scripts type into the app and read its window. Give your terminal Accessibility and Screen Recording access, and do not touch the keyboard while they run. The `desktop` script edits `~/.claude/settings.json` and restores it on exit.
+
+This suite is manual. Run it before you push a plugin change.
+
 ## Checks
 
 ```
