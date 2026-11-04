@@ -204,9 +204,18 @@ const payoutLine = ({ balanceCents, thresholdCents, payable }: Payout) =>
 const MARKETPLACE_UPDATE = ["plugin", "marketplace", "update", "sidequest"];
 const PLUGIN_UPDATE = ["plugin", "update", "sidequest@sidequest"];
 
-// The outcome and versions come from `plugin update --json`; any failure shows the commands to run by hand.
+// The Claude Code binary this plugin runs in. Claude Desktop bundles its own, and many
+// Desktop users have no `claude` CLI on their PATH.
+async function runningClaude($: EngineInterface): Promise<string> {
+  const { stdout } = await $.process
+    .run(["/bin/sh", "-c", "ps -o comm= -p $PPID"])
+    .catch(() => ({ stdout: "" }));
+  return stdout.trim() || "claude";
+}
+
+// The outcome and versions come from `plugin update --json`; any failure points the user to /plugin.
 async function updateReply($: EngineInterface): Promise<string> {
-  const claude = (await $.env.get("CLAUDE_CODE_EXECPATH")) ?? "claude";
+  const claude = await runningClaude($);
   const run = (args: string[]) =>
     $.process.run([claude, ...args], { timeoutMs: UPDATE_TIMEOUT_MS });
   try {
@@ -227,8 +236,8 @@ async function updateReply($: EngineInterface): Promise<string> {
       }
     }
   } catch {}
-  const commands = [MARKETPLACE_UPDATE, PLUGIN_UPDATE].map((args) => `claude ${args.join(" ")}`);
-  return `Sidequest could not update. Check your internet connection and run /sidequest update again. If it still fails, run these in a terminal, then run /reload-plugins:\n\`\`\`\n${commands.join("\n")}\n\`\`\``;
+  // /plugin works in the terminal and in Desktop, with no CLI.
+  return "Sidequest could not update. Check your internet connection and run /sidequest update again. If it still fails, run /plugin and update Sidequest there.";
 }
 
 async function statusLines($: EngineInterface, current: Settings) {

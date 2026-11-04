@@ -172,9 +172,11 @@ function world(
         stdout:
           e.argv[0] === "uname"
             ? unameOutput
-            : e.argv.includes("--json")
-              ? JSON.stringify(updateVersions)
-              : `${PNG}\n`,
+            : e.argv[2]?.startsWith("ps -o comm=")
+              ? "/Applications/Claude.app/claude\n"
+              : e.argv.includes("--json")
+                ? JSON.stringify(updateVersions)
+                : `${PNG}\n`,
         stderr: "",
         isStdoutTruncated: false,
         isStderrTruncated: false,
@@ -550,13 +552,13 @@ test("a local checkout is not told to update", async ($, on) => {
   expect(toasts).toEqual([]);
 });
 
-test("/sidequest update updates the marketplace and then the plugin", async ($, on) => {
-  const { opened } = world(on, { ...CONNECTED, osEnv: { CLAUDE_CODE_EXECPATH: "/opt/claude" } });
+test("/sidequest update runs the Claude Code it is running in, with no CLI needed", async ($, on) => {
+  const { opened } = world(on, CONNECTED);
   await sidequest($, "update");
 
-  expect(opened.filter((argv) => argv[0] === "/opt/claude")).toEqual([
-    ["/opt/claude", "plugin", "marketplace", "update", "sidequest"],
-    ["/opt/claude", "plugin", "update", "sidequest@sidequest", "--json"],
+  expect(opened.filter((argv) => argv[0] === "/Applications/Claude.app/claude")).toEqual([
+    ["/Applications/Claude.app/claude", "plugin", "marketplace", "update", "sidequest"],
+    ["/Applications/Claude.app/claude", "plugin", "update", "sidequest@sidequest", "--json"],
   ]);
 });
 
@@ -589,10 +591,10 @@ test("/sidequest update on the latest version says so", async ($, on) => {
 });
 
 test("/sidequest update that fails shows the command to run in a terminal", async ($, on) => {
-  world(on, { ...CONNECTED, failingCommands: ["claude"] });
+  world(on, { ...CONNECTED, failingCommands: ["/Applications/Claude.app/claude"] });
 
   expect(await sidequest($, "update")).toBe(
-    "Sidequest could not update. Check your internet connection and run /sidequest update again. If it still fails, run these in a terminal, then run /reload-plugins:\n```\nclaude plugin marketplace update sidequest\nclaude plugin update sidequest@sidequest\n```",
+    "Sidequest could not update. Check your internet connection and run /sidequest update again. If it still fails, run /plugin and update Sidequest there.",
   );
 });
 
