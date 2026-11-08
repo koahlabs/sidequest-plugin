@@ -631,12 +631,12 @@ export const register: Register = (on) => {
     await $.command.register({
       name: "sidequest",
       description: BAND_ADS
-        ? "Turn Sidequest ads on or off, or choose inline or band ads"
-        : "Turn Sidequest ads on or off",
+        ? "Show your Sidequest earnings and status, turn ads on or off, choose inline or band ads, or update"
+        : "Show your Sidequest earnings and status, turn ads on or off, or update",
     });
     await $.command.register({
       name: "sidequest-connect",
-      description: "Link Sidequest to your account in the browser",
+      description: "Link this computer to your Sidequest account in the browser",
     });
     const pending = await storedPending($);
     if (pending) void pollConnection($, pending).catch(() => {});

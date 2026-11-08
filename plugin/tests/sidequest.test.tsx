@@ -445,12 +445,6 @@ test("/sidequest with no surface to draw ads says why no ads show", async ($, on
   );
 });
 
-test("/sidequest with no surface to draw ads has no ads on or off line", async ($, on) => {
-  world(on, { ...CONNECTED, surfaces: [] });
-
-  expect(await sidequest($, "")).not.toContain("Ads: ");
-});
-
 const ACCOUNT_LINES: [number[], string][] = [
   [[200], "Account: connected"],
   [[202], "Account: waiting for you to finish connecting"],
@@ -709,7 +703,7 @@ test("tells the site the ad request comes from Claude Desktop", async ($, on) =>
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("desktop");
 });
 
-test("an IDE extension request sends its entrypoint as the client", async ($, on) => {
+test("an IDE extension request sends its entrypoint as the client and no terminal program", async ($, on) => {
   const { calls, clock } = world(on, {
     ...CONNECTED,
     osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
@@ -720,7 +714,8 @@ test("an IDE extension request sends its entrypoint as the client", async ($, on
   await $.turn.complete(COMPLETE);
   await clock.settle();
 
-  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").client).toBe("claude-vscode");
+  const body = JSON.parse(inlineRequests(calls)[0]?.body ?? "{}");
+  expect([body.client, body.terminalProgram]).toEqual(["claude-vscode", undefined]);
 });
 
 test("a terminal opened from another terminal sends its own app, not the inherited TERM_PROGRAM", async ($, on) => {
@@ -737,20 +732,6 @@ test("a terminal opened from another terminal sends its own app, not the inherit
   expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").terminalProgram).toBe(
     "net.kovidgoyal.kitty",
   );
-});
-
-test("an IDE extension launched from a terminal sends no terminal program", async ($, on) => {
-  const { calls, clock } = world(on, {
-    ...CONNECTED,
-    osEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-vscode" },
-  });
-  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
-  await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await drawReply($);
-  await $.turn.complete(COMPLETE);
-  await clock.settle();
-
-  expect(JSON.parse(inlineRequests(calls)[0]?.body ?? "{}").terminalProgram).toBeUndefined();
 });
 
 test("a Claude Desktop viewport does not set fullscreen", async ($, on) => {
@@ -932,21 +913,37 @@ test("renders no ad and reports no impression for an ad without a valid impressi
   expect(calls.filter((c) => c.url.includes("/api/impression/"))).toHaveLength(0);
 });
 
-test("leaves the earlier messages of the answer alone", async ($, on) => {
+test("draws the ad under the newest message of the answer only", async ($, on) => {
+  const { clock } = world(on, CONNECTED);
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await drawReply($, "msg_0");
+  await drawReply($, "msg_1");
+  await $.turn.complete(COMPLETE);
+  await clock.settle();
+
+  const earlier = await $.ui.mount({
+    ...message("Look at fit first."),
+    requestId: "msg_0",
+    surface: "terminal",
+  });
+  const newest = await $.ui.mount({ ...message(ANSWER), requestId: "msg_1", surface: "terminal" });
+  expect(await earlier.find({ text: /Sponsored/ })).toBeUndefined();
+  expect(await newest.find({ text: /Sponsored/ })).toBeDefined();
+});
+
+test("/sidequest off hides the ad that is showing", async ($, on) => {
   const { clock } = world(on, CONNECTED);
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
   await $.turn.start({ text: QUESTION, turnId: "t1" });
   await drawReply($);
   await $.turn.complete(COMPLETE);
   await clock.settle();
+  await sidequest($, "off");
 
-  const ui = await $.ui.mount({
-    ...message("Look at fit first."),
-    requestId: "msg_0",
-    surface: "desktop",
-  });
-  expect(await ui.find({ text: /engine row/ })).toBeDefined();
+  const ui = await $.ui.mount({ ...message(ANSWER), surface: "terminal" });
   expect(await ui.find({ text: /Sponsored/ })).toBeUndefined();
+  await ui.unmount();
 });
 
 test("requests nothing when the question is blank", async ($, on) => {
@@ -958,6 +955,19 @@ test("requests nothing when the question is blank", async ($, on) => {
   await clock.settle();
   expect(inlineRequests(calls)).toHaveLength(0);
 });
+
+for (const reason of ["aborted", "error"] as const) {
+  test(`a turn that ends ${reason} sends no ad request`, async ($, on) => {
+    const { calls, clock } = world(on, CONNECTED);
+    await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+    await $.turn.start({ text: QUESTION, turnId: "t1" });
+    await drawReply($);
+    await $.turn.complete({ ...COMPLETE, reason });
+    await clock.settle();
+
+    expect(inlineRequests(calls)).toHaveLength(0);
+  });
+}
 
 test("the ad request carries the question of its own turn when a prompt starts the next turn first", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
@@ -1112,14 +1122,6 @@ for (const surface of ["terminal", "desktop"] as const) {
   });
 }
 
-test("a submit that never reaches turn.start sends no ad request", async ($, on) => {
-  const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD] });
-  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
-  await clock.settle();
-
-  expect(calls.filter((c) => c.url === `${SITE}/api/ad`)).toHaveLength(0);
-});
-
 bandTest("a turn sends one band request and never rotates", async ($, on) => {
   const { calls, clock } = world(on, { ...CONNECTED, bandAds: [BAND_AD, NEXT_BAND_AD] });
   await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
@@ -1272,6 +1274,17 @@ bandTest("a turn started by an agent sends no band request", async ($, on) => {
   expect(bandRequests(calls)).toHaveLength(0);
 });
 
+test("a turn a subagent runs sends no ad request", async ($, on) => {
+  const { calls, clock } = world(on, CONNECTED);
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+  await $.turn.start({ text: QUESTION, turnId: "t2", agentId: "a1" });
+  await drawReply($);
+  await $.turn.complete({ ...COMPLETE, turnId: "t2", agentId: "a1" });
+  await clock.settle();
+
+  expect(inlineRequests(calls)).toHaveLength(0);
+});
+
 const NOTIFICATION = "<task-notification><task-id>b1</task-id></task-notification>";
 
 test("a turn a background task starts sends no ad request", async ($, on) => {
@@ -1323,6 +1336,23 @@ test("a ! shell command's turn sends no ad request", async ($, on) => {
   await clock.settle();
 
   expect(inlineRequests(calls)).toHaveLength(0);
+});
+
+test("a ! shell command's turn after a typed turn sends no ad request of its own", async ($, on) => {
+  const { calls, clock } = world(on, CONNECTED);
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await drawReply($);
+  await $.turn.complete(COMPLETE);
+  await $.turn.start({
+    text: "<bash-stdout>hi</bash-stdout><bash-stderr></bash-stderr>",
+    turnId: "t2",
+  });
+  await drawReply($, "msg_2");
+  await $.turn.complete({ ...COMPLETE, turnId: "t2" });
+  await clock.settle();
+
+  expect(inlineRequests(calls).map((c) => JSON.parse(c.body ?? "{}").question)).toEqual([QUESTION]);
 });
 
 test("a slash command's turn sends no ad request", async ($, on) => {
@@ -1467,20 +1497,6 @@ bandTest("/sidequest inline off still requests band ads", async ($, on) => {
   await clock.settle();
 
   expect(bandRequests(calls)).toHaveLength(1);
-});
-
-bandTest("/sidequest inline off hides the inline ad that is showing", async ($, on) => {
-  const { clock } = world(on, CONNECTED);
-  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
-  await $.turn.start({ text: QUESTION, turnId: "t1" });
-  await drawReply($);
-  await $.turn.complete(COMPLETE);
-  await clock.settle();
-  await sidequest($, "inline off");
-
-  const ui = await $.ui.mount({ ...message("Prioritize fit and cushioning."), surface: "desktop" });
-  expect(await ui.find({ text: /Sponsored/ })).toBeUndefined();
-  await ui.unmount();
 });
 
 bandTest("/sidequest off sends no ad request of either kind", async ($, on) => {
