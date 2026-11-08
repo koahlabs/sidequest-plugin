@@ -54,9 +54,10 @@ let imagesDraw: boolean | undefined;
 let imagesProbe: Promise<void> | undefined;
 let settingsOnce: Promise<Settings> | undefined;
 // Ads follow prompts typed in the terminal or Claude Desktop (both "composer"), not turns that
-// background tasks, schedules, peers, Remote Control or `claude -p` start. Only those turns are here.
+// background tasks, schedules, peers, Remote Control, `claude -p`, slash commands or `!` shell
+// commands start. A `!` command raises no prompt.submit, so a turn counts only when one marked it.
 const questions = new Map<string, string>();
-let nextTurnFromPerson = true;
+let nextTurnFromPerson = false;
 // Every AssistantMessage id drawn this load, and the newest first-seen id per surface this turn.
 const renderedIds = new Set<string>();
 const newestRenderedId = new Map<RenderSurface, string>();
@@ -718,14 +719,14 @@ export const register: Register = (on) => {
   });
 
   on("prompt.submit", async ($, e, next) => {
-    if (e.turnId === undefined) nextTurnFromPerson = e.origin.kind === "composer";
+    if (e.turnId === undefined) nextTurnFromPerson = e.origin.kind === "composer" && !e.command;
     return next(e);
   });
 
   on("turn.start", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
     const fromPerson = nextTurnFromPerson;
-    nextTurnFromPerson = true;
+    nextTurnFromPerson = false;
     if (fromPerson) {
       questions.set(e.turnId, e.text);
       newestRenderedId.clear();
