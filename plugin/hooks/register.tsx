@@ -696,9 +696,7 @@ export const register: Register = (on) => {
       })
       .catch(() => undefined);
     if (res?.status === 403)
-      return {
-        text: "**Sidequest is in early access in the US only.** You can't earn with it outside the US yet. We're bringing Sidequest to more countries soon.",
-      };
+      return { text: "Sidequest is available in the US today and coming to more countries soon." };
     if (res?.status === 429)
       return { text: "Too many connection attempts from this network. Try again in 10 minutes." };
     if (res?.status !== 201)

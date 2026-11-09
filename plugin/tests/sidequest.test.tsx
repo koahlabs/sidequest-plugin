@@ -292,10 +292,12 @@ test("requests no ad when no surface can draw it", async ($, on) => {
   expect(inlineRequests(calls)).toHaveLength(0);
 });
 
-test("/sidequest-connect outside the US says it is in early access in the US", async ($, on) => {
+test("/sidequest-connect outside the US says it is available in the US today", async ($, on) => {
   world(on, { startStatus: 403 });
 
-  expect(await connect($)).toStartWith("**Sidequest is in early access in the US only.**");
+  expect(await connect($)).toBe(
+    "Sidequest is available in the US today and coming to more countries soon.",
+  );
 });
 
 const URL_WITH_CODE = `${SITE}/connect?code=BCDF-GHJK`;
