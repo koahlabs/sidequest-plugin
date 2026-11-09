@@ -135,8 +135,11 @@ function world(
       return latestVersion ? reply(200, JSON.stringify({ version: latestVersion })) : reply(404);
     }
     const method = e.init?.method ?? "GET";
-    calls.push({ url: e.url, method, body: e.init?.body, auth: e.init?.headers?.Authorization });
+    // The plugin sends only text bodies.
+    const body = typeof e.init?.body === "string" ? e.init.body : undefined;
+    calls.push({ url: e.url, method, body, auth: e.init?.headers?.Authorization });
     if (e.url.endsWith("/api/device")) {
+      if (method === "PATCH") return reply(204);
       if (method === "POST") {
         if (startStatus !== 201) return reply(startStatus, "{}");
         return reply(
@@ -148,7 +151,7 @@ function world(
       return reply(status, answers[status]);
     }
     if (e.url === `${SITE}/api/ad`) {
-      if (JSON.parse(e.init?.body ?? "{}").placement === "band") {
+      if (JSON.parse(body ?? "{}").placement === "band") {
         const served = bandAds.shift();
         if (holdFirstBand && bandCalls++ === 0) await firstBandGate;
         return served ? reply(200, JSON.stringify(served)) : reply(204);
@@ -289,10 +292,10 @@ test("requests no ad when no surface can draw it", async ($, on) => {
   expect(inlineRequests(calls)).toHaveLength(0);
 });
 
-test("/sidequest-connect outside the US says it is US only", async ($, on) => {
+test("/sidequest-connect outside the US says it is in early access in the US", async ($, on) => {
   world(on, { startStatus: 403 });
 
-  expect(await connect($)).toBe("only available in the US for now.");
+  expect(await connect($)).toStartWith("**Sidequest is in early access in the US only.**");
 });
 
 const URL_WITH_CODE = `${SITE}/connect?code=BCDF-GHJK`;
@@ -946,6 +949,15 @@ test("/sidequest off hides the ad that is showing", async ($, on) => {
   await ui.unmount();
 });
 
+test("/sidequest off tells the site that ads are off on this computer", async ($, on) => {
+  const { calls } = world(on, CONNECTED);
+  await sidequest($, "off");
+
+  expect(calls.filter((call) => call.method === "PATCH")).toEqual([
+    { url: `${SITE}/api/device`, method: "PATCH", body: '{"ads":"off"}', auth: `Bearer ${KEY}` },
+  ]);
+});
+
 test("requests nothing when the question is blank", async ($, on) => {
   const { calls, clock } = world(on, CONNECTED);
   await $.prompt.submit({ text: "  ", wait: false, origin: { kind: "composer" } });
@@ -1028,6 +1040,7 @@ const band = (isWorking: boolean, hasSurvey = false, bodyColumns = 80) => ({
   component: "AbovePrompt" as const,
   props: {
     hasSurvey,
+    isCollapsed: false,
     isWorking,
     maxRows: 10,
     bodyColumns,
