@@ -4,8 +4,11 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SURFACE=$(basename "$0")
 TIMEOUT=90
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sidequest-golden.XXXXXX")
-# Letters only, so OCR cannot misread it; the ad text is this run's proof on screen.
-RUN=$(jot -r -c 8 A Z | tr -d '\n')
+# Letters only, and none that OCR confuses with a digit or another letter (O, I, B, S, Q, Z).
+# The ad text is this run's proof on screen.
+RUN_LETTERS=ACDEFGHJKLMNPRTUVWXY
+RUN=
+for n in $(jot -r 8 0 19); do RUN+=${RUN_LETTERS:n:1}; done
 AD_TEXT="Golden ad $RUN"
 IMPRESSION_ID=$(uuidgen)
 PROMPT="I am shopping for running shoes. Answer in one short sentence."
@@ -53,9 +56,12 @@ site_saw() { grep -qF "$1" "$WORK/site.log" 2>/dev/null; }
 yes_no() { "$@" && echo yes || echo no; }
 
 # Waits for both proofs: this run's ad text on screen (the check passed in) and its impression.
-# On a timeout, "ad requested: no" means the plugin has no saved device key (see the README).
+# Without a saved device key the plugin asks for no ad, so check for the key before waiting.
 finish() {
-  local deadline=$((SECONDS + TIMEOUT)) drawn received
+  local deadline=$((SECONDS + TIMEOUT)) drawn received identity=inline fix=script/golden/connect
+  [ "$SURFACE" != desktop ] || { identity=sidequest; fix="/sidequest-connect in a Claude Desktop session"; }
+  jq -e .deviceKey "$HOME"/.claude/plugins/store/sidequest_"$identity"-*.json >/dev/null 2>&1 ||
+    fail "the plugin has no saved device key. Run $fix."
   while true; do
     received=$(yes_no site_saw "POST /api/impression/$IMPRESSION_ID")
     # The plugin sends the impression as it draws the ad, so read the screen only after it.

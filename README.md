@@ -109,6 +109,11 @@ The last command is optional. It removes the marketplace.
 
 `bun run uninstall-plugin` runs the uninstall and the marketplace remove.
 
+### What each check proves
+
+- `bun run test` runs the unit tests. They own the rules for when an ad shows and when it must not, and they need no setup or machine state.
+- The golden scripts prove that an ad draws and that its impression arrives on each real surface. They do not prove that an ad stays hidden.
+
 ### Golden render tests
 
 These scripts drive the real apps and prove that an inline ad draws. A local fake site stands in for getsidequest.dev. A surface passes when this run's ad text is on screen and the fake site receives this run's impression.
@@ -123,11 +128,17 @@ script/golden/all
 
 Each script runs alone, and each run has its own port and ad, so runs can go in parallel. `all` runs the terminal scripts in parallel, then `desktop`.
 
-Before the first run, save a device key for `plugin/` once:
+Before the first run, check these once:
 
-```
-script/golden/connect
-```
+1. Sign in to Claude Code. The scripts ask the real model a question.
+2. Give your terminal Accessibility and Screen Recording access. The scripts read app windows.
+3. Save a device key for `plugin/`:
+
+   ```
+   script/golden/connect
+   ```
+
+   The key is in `~/.claude/plugins/store/sidequest_inline-*.json`. The installed plugin has its own key in `sidequest_sidequest-*.json`. Keep both files. If you delete or move one, connect again.
 
 The terminal scripts load `plugin/` with `--plugin-dir` and pass the prompt at startup, so they never type. The `desktop` script uses the installed plugin, so install it from this checkout first:
 
@@ -135,9 +146,11 @@ The terminal scripts load `plugin/` with `--plugin-dir` and pass the prompt at s
 claude plugin marketplace remove sidequest && claude plugin marketplace add "$PWD" && claude plugin install sidequest@sidequest
 ```
 
-The `desktop` script presses Enter once in Claude Desktop, and it edits `~/.claude/settings.json` and restores it on exit. It refuses to start while that file already points at a local site. The scripts read app windows, so give your terminal Accessibility and Screen Recording access.
+The `desktop` script presses Enter once in Claude Desktop, and it edits `~/.claude/settings.json` and restores it on exit. It refuses to start while that file already points at a local site. If a run is killed, remove `env.SIDEQUEST_URL` from that file by hand.
 
-A failed run prints three facts: whether the plugin asked for an ad, whether the ad is on screen, and whether the impression arrived. "ad requested: no" means the plugin has no saved device key. For the terminal scripts, run `script/golden/connect`. For Desktop, run `/sidequest-connect` once in a Desktop session; any key works with the fake site.
+Each run first checks for a saved device key and fails at once without one. For the terminal scripts, run `script/golden/connect`. For Desktop, run `/sidequest-connect` once in a Desktop session; any key works with the fake site.
+
+Any other failure prints three facts: whether the plugin asked for an ad, whether the ad is on screen, and whether the impression arrived. The `desktop` script also fails if Claude Desktop does not show the prompt within 90 seconds.
 
 This suite is manual. Run it before you push a plugin change.
 

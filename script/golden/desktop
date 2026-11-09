@@ -18,7 +18,12 @@ start_site
 cp "$SETTINGS" "$WORK/settings.json"
 jq --arg url "$URL" '.env.SIDEQUEST_URL = $url' "$WORK/settings.json" >"$SETTINGS"
 open "claude://code/new?q=$(jq -rn --arg prompt "$PROMPT" '$prompt | @uri')"
-sleep 6
+# The link fills in the prompt a moment after the window opens.
+deadline=$((SECONDS + TIMEOUT))
+until window_has Claude "shopping for running shoes"; do
+  ((SECONDS < deadline)) || fail "Claude Desktop did not show the prompt in ${TIMEOUT}s"
+  sleep 1
+done
 # The one keypress in the suite: the link fills in the prompt but does not send it.
 osascript -e 'tell application "Claude" to activate' -e 'delay 1' -e 'tell application "System Events" to key code 36'
 finish window_has Claude "$AD_TEXT"
