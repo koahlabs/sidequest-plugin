@@ -669,6 +669,16 @@ export const register: Register = (on) => {
     const next = { ...current, ...change };
     await $.store.set("settings", next);
     settingsOnce = Promise.resolve(next);
+    const key = await storedDeviceKey($);
+    // Lets the site tell a person who turned ads off from one who stopped using Claude.
+    if (key && next.inline !== current.inline)
+      await $.http
+        .fetch(`${await site($)}/api/device`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ads: next.inline ? "on" : "off" }),
+        })
+        .catch(() => undefined);
     if (!next.band) await update($, band, () => null);
     $.ui.invalidate("ui.render");
     return reply(settingsText(next));
@@ -685,7 +695,8 @@ export const register: Register = (on) => {
         body: JSON.stringify({ os, ...(await deviceMetadata($)) }),
       })
       .catch(() => undefined);
-    if (res?.status === 403) return { text: "only available in the US for now." };
+    if (res?.status === 403)
+      return { text: "Sidequest is available in the US today and coming to more countries soon." };
     if (res?.status === 429)
       return { text: "Too many connection attempts from this network. Try again in 10 minutes." };
     if (res?.status !== 201)
