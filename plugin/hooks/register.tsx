@@ -47,6 +47,7 @@ let clientOnce: Promise<string | undefined> | undefined;
 let pluginVersionOnce: Promise<string | undefined> | undefined;
 let claudeVersionOnce: Promise<string | undefined> | undefined;
 let newerVersionOnce: Promise<string | undefined> | undefined;
+let updateAnnounced = false;
 let terminalProgramOnce: Promise<string | undefined> | undefined;
 let fullscreen: boolean | undefined;
 // Whether this terminal draws an Image's pixels; unknown until a blit answers.
@@ -617,6 +618,7 @@ export const register: Register = (on) => {
   pluginVersionOnce = undefined;
   claudeVersionOnce = undefined;
   newerVersionOnce = undefined;
+  updateAnnounced = false;
   terminalProgramOnce = undefined;
   fullscreen = undefined;
   imagesDraw = undefined;
@@ -642,11 +644,6 @@ export const register: Register = (on) => {
     if (pending) void pollConnection($, pending).catch(() => {});
     else if (!(await storedDeviceKey($))) {
       $.ui.toast("sidequest: run /sidequest-connect to link your account");
-    }
-    if (e.isInteractive) {
-      void newerVersion($).then((version) => {
-        if (version) $.ui.toast(updateNotice(version));
-      });
     }
     return next(e);
   });
@@ -742,6 +739,14 @@ export const register: Register = (on) => {
       questions.set(e.turnId, e.text);
       newestRenderedId.clear();
       bandTurnId = e.turnId;
+      // Desktop starts sessions through the SDK, where session.start is not interactive,
+      // so the update notice waits for the first typed prompt on every surface.
+      if (!updateAnnounced) {
+        updateAnnounced = true;
+        void newerVersion($).then((version) => {
+          if (version) $.ui.toast(updateNotice(version));
+        });
+      }
       // The band and inline requests each use one of the site's daily ad requests.
       void refreshBand($, e.turnId, e.text);
     }

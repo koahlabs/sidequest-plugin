@@ -530,9 +530,14 @@ test("/sidequest does not link to the earnings page before the account is connec
   expect(await sidequest($, "")).not.toContain("See your earnings");
 });
 
-test("a newer version on GitHub is announced at session start", async ($, on) => {
+test("a newer version on GitHub is announced on the first typed prompt, in Claude Desktop too", async ($, on) => {
   const { toasts, clock } = world(on, { ...CONNECTED, latestVersion: "1.10.0" });
-  await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
+  // Desktop starts sessions through the SDK, which reports them as not interactive.
+  await $.session.start({ cwd: "/tmp", surface: "desktop", isInteractive: false });
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+  await $.turn.start({ text: QUESTION, turnId: "t2" });
   await clock.settle();
 
   expect(toasts).toEqual(["Sidequest 1.10.0 is ready. Run /sidequest update."]);
@@ -550,7 +555,8 @@ test("a local checkout is not told to update", async ($, on) => {
     latestVersion: "1.10.0",
     localCheckout: true,
   });
-  await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
+  await $.prompt.submit({ text: QUESTION, wait: false, origin: { kind: "composer" } });
+  await $.turn.start({ text: QUESTION, turnId: "t1" });
   await clock.settle();
 
   expect(toasts).toEqual([]);
